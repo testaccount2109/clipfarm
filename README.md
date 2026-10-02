@@ -32,6 +32,7 @@ The project folder is a local Git repository. Each completed, related change is 
 - Instant Replay at 15, 30, 60, or 120 seconds, saved with F8 by default
 - F9 replay toggle and F10 microphone toggle; all three can be changed in Settings
 - Windows Graphics Capture with display capture or a detected game window
+- Whole-primary-monitor replay is the default and records any app on that monitor; game detection remains active for session details, and game/window capture can still be selected in Settings
 - Automatic game-process detection for the supported game list; Minecraft Java is identified from its game window title rather than any unrelated `javaw.exe`
 - AMD AMF HEVC/AVC hardware encoding, with resolution, FPS, bitrate, and quality controls
 - A local clip library with search, playback, rename, delete, and Explorer actions

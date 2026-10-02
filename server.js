@@ -40,7 +40,7 @@ const defaultEngineConfig = {
   bitrate: "28M",
   encoder: "hevc_amf",
   quality: "balanced",
-  captureMethod: "auto",
+  captureMethod: "display",
   hotkeys: { save: "F8", toggle: "F9", microphone: "F10" },
   microphoneDevice: null,
   microphoneVolume: 100,
