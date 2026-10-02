@@ -60,9 +60,13 @@ public sealed class UpdaterForm : Form
     private readonly Label messageLabel;
     private readonly ProgressBar progressBar;
     private readonly BackgroundWorker worker;
+    private readonly int parentProcessId;
+    private Timer parentExitTimer;
+    private DateTime parentWaitDeadline;
 
-    public UpdaterForm()
+    public UpdaterForm(int parentProcessId)
     {
+        this.parentProcessId = parentProcessId;
         Text = "Clipfarm Updater";
         Width = 500;
         Height = 170;
@@ -97,6 +101,43 @@ public sealed class UpdaterForm : Form
     }
 
     private void BeginUpdate(object sender, EventArgs e)
+    {
+        if (parentProcessId > 0 && IsProcessRunning(parentProcessId))
+        {
+            messageLabel.Text = "Warte, bis Clipfarm vollständig geschlossen ist …";
+            parentWaitDeadline = DateTime.UtcNow.AddSeconds(90);
+            parentExitTimer = new Timer();
+            parentExitTimer.Interval = 300;
+            parentExitTimer.Tick += WaitForParentExit;
+            parentExitTimer.Start();
+            return;
+        }
+
+        StartUpdate();
+    }
+
+    private void WaitForParentExit(object sender, EventArgs e)
+    {
+        if (!IsProcessRunning(parentProcessId))
+        {
+            parentExitTimer.Stop();
+            parentExitTimer.Dispose();
+            parentExitTimer = null;
+            StartUpdate();
+            return;
+        }
+
+        if (DateTime.UtcNow < parentWaitDeadline) return;
+        parentExitTimer.Stop();
+        parentExitTimer.Dispose();
+        parentExitTimer = null;
+        MessageBox.Show(this,
+            "Clipfarm konnte nicht vollständig geschlossen werden. Bitte beende die Anwendung und starte sie erneut.",
+            "Clipfarm-Updater", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        Close();
+    }
+
+    private void StartUpdate()
     {
         if (IsClipfarmRunning())
         {
@@ -564,6 +605,16 @@ public sealed class UpdaterForm : Form
         return false;
     }
 
+    private static bool IsProcessRunning(int processId)
+    {
+        try
+        {
+            using (Process process = Process.GetProcessById(processId)) return !process.HasExited;
+        }
+        catch (ArgumentException) { return false; }
+        catch { return true; }
+    }
+
     private static void TryDeleteFile(string path)
     {
         if (String.IsNullOrEmpty(path)) return;
@@ -582,10 +633,18 @@ public sealed class UpdaterForm : Form
 public static class Program
 {
     [STAThread]
-    public static void Main()
+    public static void Main(string[] args)
     {
+        int parentProcessId = 0;
+        foreach (string argument in args)
+        {
+            const string prefix = "--wait-pid=";
+            if (argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                Int32.TryParse(argument.Substring(prefix.Length), out parentProcessId);
+        }
+
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new UpdaterForm());
+        Application.Run(new UpdaterForm(parentProcessId));
     }
 }

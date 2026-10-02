@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("clipfarmNative", {
+  getAppInfo: () => ipcRenderer.invoke("clipfarm:app:info"),
+  checkForUpdates: () => ipcRenderer.invoke("clipfarm:update:check"),
   syncHotkeys: (hotkeys) => ipcRenderer.invoke("clipfarm:hotkeys:sync", hotkeys),
   onStartupError: (callback) => ipcRenderer.on("clipfarm:startup-error", (_event, message) => callback(message)),
   onClipOutcome: (callback) => ipcRenderer.on("clipfarm:clip-outcome", (_event, outcome) => callback(outcome)),

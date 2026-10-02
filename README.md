@@ -19,9 +19,9 @@ Create a Windows installer with:
 npm run build:win
 ```
 
-The NSIS installer is written to `release/clipfarm-Setup-1.0.4.exe`. Settings and logs are stored in the user's clipfarm application-data folder. Existing `engine-config.json` settings and a clip folder that still exists are carried over on first launch.
+The NSIS installer is written to `release/clipfarm-Setup-<Version>.exe` and includes the Clipfarm Updater. Settings and logs are stored in the user's clipfarm application-data folder. Existing `engine-config.json` settings and a clip folder that still exists are carried over on first launch.
 
-The standalone `release/Clipfarm-Updater.exe` checks the latest public GitHub release, verifies the app update archive against its SHA-256 file, and replaces the installed application files directly. It does not download or start the setup installer. Your account session, settings, upload queue, and clips stay in their existing user-data and clip folders. Close Clipfarm before opening the updater. To publish a future Windows release, update the version in `package.json`, commit the change, and push the matching version tag; GitHub Actions builds and uploads the installer, the app update archive, the updater, and the installer and app-archive checksums.
+At every installed Windows app start, Clipfarm checks the latest stable GitHub release. If a newer version is available, the bundled updater waits for Clipfarm and its local services to exit, verifies the app update archive against its SHA-256 file, replaces the installed application files, and restarts Clipfarm. It does not download or start the setup installer. Your account session, settings, upload queue, and clips stay in their existing user-data and clip folders. Open **Einstellungen → Info** to see the installed version, latest release, system details, and update status or to check manually. To publish a future Windows release, update the version in `package.json`, commit the change, and push the matching version tag; GitHub Actions builds and uploads the installer, the app update archive, the updater, and the installer and app-archive checksums.
 
 For local UI development, `npm start` serves the UI at `http://127.0.0.1:4174`. Global shortcuts and the tray belong to the Electron app. The remote backend origin is centralized in `backend-config.js` and is HTTPS-only.
 

@@ -30,9 +30,6 @@ jobs:
       - name: Build unpacked Clipfarm update files
         run: npm run pack:update
 
-      - name: Build standalone updater
-        run: npm run build:updater
-
       - name: Create release archives and checksums
         shell: pwsh
         run: |

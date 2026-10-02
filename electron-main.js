@@ -1,7 +1,7 @@
 const { app, BrowserWindow, Tray, Menu, Notification, nativeImage, globalShortcut, ipcMain, dialog, screen, safeStorage } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const https = require("node:https");
 const backendConfig = require("./backend-config");
@@ -42,6 +42,147 @@ let uploadQueue = new Map();
 let uploadWorkers = new Set();
 let uploadRetryTimer = null;
 let community = null;
+const latestReleaseUrl = "https://api.github.com/repos/testaccount2109/clipfarm/releases/latest";
+let updateState = {
+  status: app.isPackaged && process.platform === "win32" ? "checking" : "development",
+  latestVersion: null,
+  publishedAt: null,
+  releaseUrl: null,
+  error: null
+};
+
+function parseReleaseVersion(value) {
+  const match = String(value || "").trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i);
+  return match ? match.slice(1).map(Number) : null;
+}
+
+function compareVersions(left, right) {
+  const leftParts = parseReleaseVersion(left);
+  const rightParts = parseReleaseVersion(right);
+  if (!leftParts || !rightParts) return null;
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index];
+  }
+  return 0;
+}
+
+function requestLatestRelease() {
+  return new Promise((resolve, reject) => {
+    const request = https.get(latestReleaseUrl, {
+      headers: {
+        "User-Agent": "Clipfarm-Version-Check",
+        Accept: "application/vnd.github+json"
+      }
+    }, (response) => {
+      let body = "";
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`GitHub antwortet mit HTTP ${response.statusCode || "?"}.`));
+        return;
+      }
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > 256 * 1024) request.destroy(new Error("Die Antwort von GitHub ist zu groß."));
+      });
+      response.on("end", () => {
+        try { resolve(JSON.parse(body)); }
+        catch { reject(new Error("Die Versionsinformation von GitHub ist ungültig.")); }
+      });
+      response.on("error", reject);
+    });
+    request.setTimeout(5000, () => request.destroy(new Error("Zeitüberschreitung bei der GitHub-Abfrage.")));
+    request.on("error", reject);
+  });
+}
+
+function getAppInfo() {
+  return {
+    version: app.getVersion(),
+    electronVersion: process.versions.electron || "Unbekannt",
+    platform: process.platform === "win32" ? "Windows" : process.platform,
+    architecture: process.arch,
+    updaterIncluded: app.isPackaged && process.platform === "win32",
+    updateStatus: updateState.status,
+    latestVersion: updateState.latestVersion,
+    publishedAt: updateState.publishedAt,
+    releaseUrl: updateState.releaseUrl,
+    updateError: updateState.error
+  };
+}
+
+async function launchBundledUpdater() {
+  if (!app.isPackaged || process.platform !== "win32") throw new Error("Der automatische Updater ist nur in der installierten Windows-Version verfügbar.");
+  const bundledUpdater = path.join(process.resourcesPath, "Clipfarm-Updater.exe");
+  if (!fs.existsSync(bundledUpdater)) throw new Error("Der mitgelieferte Clipfarm-Updater wurde nicht gefunden.");
+
+  const updaterDirectory = path.join(app.getPath("temp"), "clipfarm-updater");
+  fs.mkdirSync(updaterDirectory, { recursive: true });
+  const temporaryUpdater = path.join(updaterDirectory, `Clipfarm-Updater-${app.getVersion()}.exe`);
+  fs.copyFileSync(bundledUpdater, temporaryUpdater);
+
+  await new Promise((resolve, reject) => {
+    const updater = spawn(temporaryUpdater, [`--wait-pid=${process.pid}`], {
+      cwd: updaterDirectory,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false
+    });
+    updater.once("error", reject);
+    updater.once("spawn", () => {
+      updater.unref();
+      resolve();
+    });
+  });
+
+  updateState.status = "installing";
+  updateState.error = null;
+  app.quit();
+}
+
+async function checkForUpdates() {
+  if (process.platform !== "win32") {
+    updateState = { ...updateState, status: "unsupported", error: null };
+    return getAppInfo();
+  }
+
+  updateState = { ...updateState, status: "checking", error: null };
+  try {
+    const release = await requestLatestRelease();
+    const latestVersion = parseReleaseVersion(release && release.tag_name)?.join(".");
+    if (!latestVersion) throw new Error("Das neueste GitHub-Release hat keine gültige Versionsnummer.");
+
+    updateState.latestVersion = latestVersion;
+    updateState.publishedAt = release.published_at || null;
+    updateState.releaseUrl = release.html_url || null;
+    if (compareVersions(latestVersion, app.getVersion()) <= 0) {
+      updateState.status = "current";
+      return getAppInfo();
+    }
+
+    updateState.status = "available";
+    if (app.isPackaged) {
+      const assetNames = new Set(Array.isArray(release.assets) ? release.assets.map((asset) => asset && asset.name) : []);
+      const archiveName = `clipfarm-App-${latestVersion}.zip`;
+      if (!assetNames.has(archiveName) || !assetNames.has(`${archiveName}.sha256`)) {
+        updateState.status = "updater-error";
+        updateState.error = "Das neueste GitHub-Release enthält kein vollständiges Clipfarm-Updatepaket.";
+        return getAppInfo();
+      }
+      try {
+        await launchBundledUpdater();
+      } catch (error) {
+        updateState.status = "updater-error";
+        updateState.error = error.message;
+      }
+    }
+    return getAppInfo();
+  } catch (error) {
+    updateState.status = "unavailable";
+    updateState.error = error.message;
+    return getAppInfo();
+  }
+}
 
 const productRoot = app.getAppPath();
 const iconPath = app.isPackaged
@@ -502,6 +643,14 @@ ipcMain.handle("clipfarm:hotkeys:sync", (event, hotkeys) => {
   if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
   return registerGlobalHotkeys(hotkeys);
 });
+ipcMain.handle("clipfarm:app:info", (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return getAppInfo();
+});
+ipcMain.handle("clipfarm:update:check", async (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return checkForUpdates();
+});
 ipcMain.handle("clipfarm:backend:status", async (event) => {
   if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
   return community ? community.getBackendStatus() : getBackendStatus();
@@ -579,7 +728,7 @@ ipcMain.handle("clipfarm:game-icon", async (event, requestedProcessId) => {
 });
 
 async function startClipfarm() {
-  createSplashWindow();
+  if (!splashWindow) createSplashWindow();
   prepareUserData();
   localHost = require("./server.js");
   const port = await localHost.startServer(0);
@@ -648,7 +797,14 @@ async function stopClipfarm() {
 
 if (hasSingleInstance) {
   app.on("second-instance", openMainWindow);
-  app.whenReady().then(() => startClipfarm()).catch(async (error) => {
+  app.whenReady().then(async () => {
+    if (app.isPackaged && process.platform === "win32") {
+      createSplashWindow();
+      const update = await checkForUpdates();
+      if (update.updateStatus === "installing") return;
+    }
+    await startClipfarm();
+  }).catch(async (error) => {
     dialog.showErrorBox("clipfarm konnte nicht gestartet werden", error.message);
     await stopClipfarm().catch(() => {});
     app.quit();

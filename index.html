@@ -273,6 +273,7 @@
               <button class="settings-tab" id="settingsTabHotkeys" role="tab" aria-selected="false" aria-controls="settingsPanelHotkeys" data-settings-tab="hotkeys" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#session"></use></svg><span>Tasten</span></button>
               <button class="settings-tab" id="settingsTabStorage" role="tab" aria-selected="false" aria-controls="settingsPanelStorage" data-settings-tab="storage" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#clips"></use></svg><span>Speicher</span></button>
               <button class="settings-tab" id="settingsTabPerformance" role="tab" aria-selected="false" aria-controls="settingsPanelPerformance" data-settings-tab="performance" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#server"></use></svg><span>Leistung</span></button>
+              <button class="settings-tab" id="settingsTabInfo" role="tab" aria-selected="false" aria-controls="settingsPanelInfo" data-settings-tab="info" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#info"></use></svg><span>Info</span></button>
             </nav>
             <div class="settings-content">
               <div class="settings-group is-active" id="settingsPanelRecording" role="tabpanel" aria-labelledby="settingsTabRecording" tabindex="0" data-settings-group="recording"><div class="settings-panel-head"><div><h3>Aufnahmequalität</h3><p>So werden deine Replays lokal gespeichert.</p></div><span>Instant Replay</span></div><div class="settings-fields">
@@ -296,6 +297,25 @@
               </div>
               <div class="settings-group" id="settingsPanelStorage" role="tabpanel" aria-labelledby="settingsTabStorage" tabindex="0" data-settings-group="storage"><h3>Speicherort</h3><div class="settings-fields"><label>Clip-Ordner<input id="clipDirectoryInput" value="" /></label><label>Temporärer Pufferordner<input id="bufferDirectoryInput" value="" /></label><label>Maximaler Speicher<select id="maxStorageSelect"><option value="10">10 GB</option><option value="50" selected>50 GB</option><option value="100">100 GB</option></select></label><label>Automatisch bereinigen<select id="cleanupPolicySelect"><option value="limit" selected>Wenn Limit erreicht</option><option value="never">Nie</option></select></label></div><p class="settings-help">Ordneränderungen gelten ab dem nächsten Engine-Neustart. Die Bereinigung folgt deiner Speichergrenze und betrifft nur MP4-Clips im Clip-Ordner.</p></div>
               <div class="settings-group" id="settingsPanelPerformance" role="tabpanel" aria-labelledby="settingsTabPerformance" tabindex="0" data-settings-group="performance"><h3>Leistung und Aufnahmeweg</h3><div class="settings-list"><div><span>Hardware-Encoder verwenden</span><button class="switch is-on" type="button" aria-pressed="true" disabled><span></span></button></div><div><span>Windows Graphics Capture bevorzugen</span><button class="switch is-on" type="button" aria-pressed="true" disabled><span></span></button></div><div><span>Hintergrundpriorität reduzieren</span><button class="switch" id="backgroundPrioritySwitch" type="button" aria-pressed="false"><span></span></button></div></div><div class="settings-fields settings-fields-spaced"><label>Aufnahmemethode<select id="captureMethodSelect"><option value="display" selected>Ganzer Hauptmonitor (alle Apps)</option><option value="auto">Automatisch: Spiel oder Monitor</option><option value="game">Spielfenster (erkannte Session)</option><option value="window">Fenster (erkannte Session)</option></select></label><label>GPU-Auswahl<select disabled><option selected>AMD AMF · System-GPU</option></select></label></div><p class="settings-help">Standardmäßig nimmt Clipfarm den gesamten Hauptmonitor in jeder App auf. Die Spielerkennung bleibt aktiv und zeigt erkannte Spiele in der Session an. Fenster- oder Spieleaufnahme kannst du hier optional auswählen. Für das Overlay im Spiel: Fenstermodus oder randloses Vollbild verwenden. Exklusives Vollbild blendet Desktop-Overlays aus.</p><button class="plain-link" id="testOverlayButton" type="button">Overlay testen</button></div>
+              <div class="settings-group" id="settingsPanelInfo" role="tabpanel" aria-labelledby="settingsTabInfo" tabindex="0" data-settings-group="info">
+                <div class="settings-panel-head"><div><h3>Über Clipfarm</h3><p>Versionsdetails und Status der automatischen Updates.</p></div><span>DESKTOP</span></div>
+                <div class="app-info-layout">
+                  <section class="app-info-summary" aria-label="Clipfarm-Version">
+                    <div class="app-info-mark"><img src="./desktop/branding/clipfarm-mark.svg" alt="" /></div>
+                    <div><span class="section-label">CLIPFARM DESKTOP</span><strong id="appInfoVersion">Version wird geladen …</strong><p>Gaming-Momente aufnehmen und teilen.</p></div>
+                  </section>
+                  <dl class="app-info-details">
+                    <div><dt>Installierte Version</dt><dd id="appInfoInstalledVersion">Wird geladen …</dd></div>
+                    <div><dt>Neueste stabile Version</dt><dd id="appInfoLatestVersion">Prüfung läuft …</dd></div>
+                    <div><dt>Zuletzt veröffentlicht</dt><dd id="appInfoReleaseDate">—</dd></div>
+                    <div><dt>System</dt><dd id="appInfoPlatform">Wird geladen …</dd></div>
+                    <div><dt>Electron</dt><dd id="appInfoElectron">—</dd></div>
+                    <div><dt>Updater</dt><dd id="appInfoUpdater">Wird geladen …</dd></div>
+                    <div class="app-info-update-row"><dt>Update-Status</dt><dd id="appInfoUpdateStatus" aria-live="polite">Prüfung beim Start …</dd></div>
+                  </dl>
+                </div>
+                <div class="app-info-actions"><button class="secondary-button" id="checkForUpdatesButton" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#refresh"></use></svg><span>Jetzt nach Updates suchen</span></button><p>Clipfarm prüft beim Start automatisch die neuesten stabilen GitHub-Releases.</p></div>
+              </div>
             </div>
           </div>
         </section>

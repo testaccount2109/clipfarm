@@ -1190,6 +1190,67 @@ settingsTabList?.addEventListener("keydown", (event) => {
   settingsTabs[nextIndex].focus();
   activateSettingsTab(settingsTabs[nextIndex]);
 });
+function renderAppInfo(info) {
+  if (!info) return;
+  const version = `v${info.version || "—"}`;
+  $("appInfoVersion").textContent = version;
+  $("appInfoInstalledVersion").textContent = version;
+  $("appInfoLatestVersion").textContent = info.latestVersion ? `v${info.latestVersion}` : "Noch nicht geprüft";
+  $("appInfoPlatform").textContent = [info.platform, info.architecture].filter(Boolean).join(" · ");
+  $("appInfoElectron").textContent = info.electronVersion || "—";
+  $("appInfoUpdater").textContent = info.updaterIncluded ? "Im Installationspaket enthalten" : "Nur in der Windows-App";
+  $("appInfoReleaseDate").textContent = info.publishedAt
+    ? new Intl.DateTimeFormat("de-DE", { dateStyle: "medium" }).format(new Date(info.publishedAt))
+    : "—";
+
+  const statusLabels = {
+    checking: "Suche nach Releases …",
+    current: "Clipfarm ist aktuell",
+    available: `Version v${info.latestVersion || ""} verfügbar`,
+    installing: "Updater wird gestartet …",
+    "updater-error": "Update erkannt, Updater konnte nicht starten",
+    unavailable: "GitHub gerade nicht erreichbar",
+    unsupported: "Für dieses System nicht verfügbar",
+    development: "Automatische Prüfung beim Start"
+  };
+  const status = $("appInfoUpdateStatus");
+  status.textContent = statusLabels[info.updateStatus] || "Status wird geprüft";
+  status.dataset.state = info.updateStatus || "unknown";
+  if (info.updateError) status.title = info.updateError;
+  else status.removeAttribute("title");
+}
+
+async function loadAppInfo() {
+  if (!window.clipfarmNative?.getAppInfo) return;
+  try { renderAppInfo(await window.clipfarmNative.getAppInfo()); }
+  catch { $("appInfoUpdateStatus").textContent = "Versionsdetails nicht verfügbar"; }
+}
+
+const checkForUpdatesButton = $("checkForUpdatesButton");
+checkForUpdatesButton?.addEventListener("click", async () => {
+  if (!window.clipfarmNative?.checkForUpdates) {
+    showToast("Die Update-Prüfung ist nur in der Desktop-App verfügbar.");
+    return;
+  }
+  checkForUpdatesButton.disabled = true;
+  const label = checkForUpdatesButton.querySelector("span");
+  const previousLabel = label.textContent;
+  label.textContent = "Prüfe GitHub …";
+  try {
+    const info = await window.clipfarmNative.checkForUpdates();
+    renderAppInfo(info);
+    if (info.updateStatus === "current") showToast("Clipfarm ist auf dem neuesten Stand.");
+    else if (info.updateStatus === "available") showToast(`Clipfarm ${info.latestVersion} ist verfügbar.`);
+    else if (info.updateStatus === "unavailable") showToast("GitHub ist gerade nicht erreichbar. Versuch es später erneut.");
+    else if (info.updateStatus === "updater-error") showToast("Der Updater konnte nicht gestartet werden.");
+  } catch {
+    showToast("Die Update-Prüfung ist fehlgeschlagen.");
+  } finally {
+    checkForUpdatesButton.disabled = false;
+    label.textContent = previousLabel;
+  }
+});
+loadAppInfo();
 document.querySelectorAll(".settings-list .switch:not(#microphoneSettingSwitch):not(#backgroundPrioritySwitch):not(#gameAudioSettingsSwitch):not(#separateTracksSwitch)").forEach((button) => button.addEventListener("click", () => toggleSwitch(button)));
 $("microphoneSettingSwitch").addEventListener("click", toggleMicrophone);
 $("playbackDialog").addEventListener("close", () => {
