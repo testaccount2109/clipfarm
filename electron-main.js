@@ -179,8 +179,8 @@ function showClipOutcomeOverlay(outcome) {
   const overlay = clipOverlayWindow;
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const { x, y, width, height } = display.bounds;
-  const overlayWidth = 360;
-  const overlayHeight = 92;
+  const overlayWidth = 400;
+  const overlayHeight = 104;
   overlay.setBounds({
     x: Math.round(x + 22),
     y: Math.round(y + height - overlayHeight - 24),
@@ -335,6 +335,8 @@ function isTrustedRenderer(event) {
 }
 
 async function saveReplay() {
+  if (clipSaveInFlight) return;
+  clipSaveInFlight = true;
   showClipOutcomeOverlay({ outcome: "saving", message: "2 Sekunden Nachlauf – Clip wird gesichert." });
   try {
     const [settings, session] = await Promise.all([api("/api/config"), api("/api/session")]);
@@ -351,6 +353,8 @@ async function saveReplay() {
   } catch (error) {
     reportClipOutcome("failed", error.message);
     throw error;
+  } finally {
+    clipSaveInFlight = false;
   }
 }
 
@@ -437,7 +441,7 @@ function createSplashWindow() {
     movable: true,
     show: true,
     center: true,
-    backgroundColor: "#0d0f10",
+    backgroundColor: "#111411",
     icon: iconPath,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
   });

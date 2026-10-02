@@ -2,6 +2,7 @@ const demoClipNames = new Set(["Counter-Strike 2 clutch", "Minecraft nether run"
 
 const state = {
   replayOn: false,
+  clipSaving: false,
   micOn: true,
   metricsOn: true,
   metricsLive: false,
@@ -200,7 +201,8 @@ function updateReplayUI() {
   const head = document.querySelector(".timeline-head");
   if (head) head.style.left = `${fill * 100}%`;
   // The button remains actionable so it can explain when the replay buffer is empty.
-  $("saveClipButton").removeAttribute("aria-disabled");
+  $("saveClipButton").disabled = state.clipSaving;
+  $("saveClipButton").setAttribute("aria-busy", String(state.clipSaving));
   $("saveClipButton").title = hasBuffer ? `Clip mit ${state.bufferSeconds} Sekunden Puffer speichern` : "Noch keine Replay-Segmente verfügbar";
   renderCaptureStatus();
 }
@@ -216,6 +218,7 @@ function formatDuration(seconds) {
 }
 
 async function saveClip() {
+  if (state.clipSaving) return;
   if (state.bufferSeconds <= 0) {
     const message = state.engineError ? 'Keine Segmente im Puffer. Bei minimiertem Spielfenster kann die Aufnahme nicht starten.' : 'Noch keine Replay-Segmente verfügbar. Starte den Puffer und spiele mindestens eine halbe Sekunde.';
     playClipOutcome(false, { message }); showToast(message); return;
@@ -224,6 +227,9 @@ async function saveClip() {
     showToast('Clipfarm kann den Clip nur lokal sichern.');
     return;
   }
+  state.clipSaving = true;
+  $("saveClipButton").disabled = true;
+  $("saveClipButton").setAttribute("aria-busy", "true");
   const savingMessage = state.engineLive
     ? `${state.bufferSeconds} Sekunden Puffer + ${state.postRollSeconds} Sekunden Nachlauf – Clip wird gesichert.`
     : `${state.bufferSeconds} Sekunden aus dem vorhandenen Puffer werden gesichert.`;
@@ -250,6 +256,10 @@ async function saveClip() {
   } catch (error) {
     playClipOutcome(false, { message: error.message });
     showToast(error.message);
+  } finally {
+    state.clipSaving = false;
+    $("saveClipButton").disabled = false;
+    $("saveClipButton").setAttribute("aria-busy", "false");
   }
 }
 function addClip(realClip = {}) {
@@ -267,19 +277,39 @@ function addClip(realClip = {}) {
 }
 
 function thumbnail(clip, compact = false) {
-  const el = document.createElement("div");
+  const el = document.createElement("button");
+  el.type = "button";
   el.className = `thumb ${compact ? "library-thumb" : ""}`;
+  const canPlay = Boolean(clip.file);
+  el.disabled = !canPlay;
+  el.setAttribute("aria-label", canPlay ? `Clip abspielen: ${clip.name}` : `Keine Videodatei für ${clip.name} verfügbar`);
+  el.addEventListener("click", () => playClip(clip));
+  const scene = document.createElement("span");
+  scene.className = "thumb-scene";
+  scene.setAttribute("aria-hidden", "true");
+  el.append(scene);
   const label = document.createElement("span");
   label.className = "thumb-label";
   label.textContent = clip.game === "Counter-Strike 2" ? "CS2" : String(clip.game || "Game").toUpperCase().slice(0, 7);
   const duration = document.createElement("span");
   duration.className = "thumb-time";
   duration.textContent = clip.duration || "—";
-  el.append(label, duration);
+  const playGlyph = document.createElement("span");
+  playGlyph.className = "thumb-play";
+  playGlyph.setAttribute("aria-hidden", "true");
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.classList.add("icon");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", "./assets/clipfarm-icons.svg#play");
+  icon.append(use);
+  playGlyph.append(icon);
+  el.append(label, duration, playGlyph);
   if (clip.thumbnail) {
     try {
       const imageUrl = new URL(clip.thumbnail, window.location.href);
       if (imageUrl.origin === window.location.origin && imageUrl.pathname === "/api/thumbnail") {
+        el.classList.add("has-preview");
         el.style.backgroundImage = `url("${imageUrl.href}")`;
         el.style.backgroundSize = "cover";
         el.style.backgroundPosition = "center";
@@ -311,35 +341,60 @@ function renderLibrary() {
   const query = $("clipSearch").value.trim().toLowerCase();
   const clips = state.clips.filter((clip) => {
     const matchesQuery = !query || `${clip.name} ${clip.game}`.toLowerCase().includes(query);
-    const matchesFilter = state.filter === "all" || clip.date.startsWith("Heute");
+    const matchesFilter = state.filter === "all" || String(clip.date || "").startsWith("Heute");
     return matchesQuery && matchesFilter;
   });
   list.replaceChildren();
+  $("libraryTotalCount").textContent = state.clips.length.toLocaleString("de-DE");
+  $("libraryResultCount").textContent = `${clips.length} von ${state.clips.length} ${state.clips.length === 1 ? "Clip" : "Clips"}`;
   $("emptyLibrary").hidden = clips.length > 0;
+  const hasSavedClips = state.clips.length > 0;
+  $("emptyLibrary").querySelector("h3").textContent = hasSavedClips ? "Kein Clip gefunden" : "Noch keine Clips gespeichert";
+  $("emptyLibrary").querySelector("p").textContent = hasSavedClips
+    ? "Ändere den Suchbegriff oder setze den Heute-Filter zurück."
+    : "Sichere einen Moment mit F8. Deine Aufnahmen erscheinen hier automatisch.";
+  $("emptySessionButton").textContent = hasSavedClips ? "Filter zurücksetzen" : "Zur Aufnahme";
   clips.forEach((clip) => {
-    const row = document.createElement("article"); row.className = "library-row";
-    row.append(thumbnail(clip, true));
-    const title = document.createElement("div"); title.className = "library-row-title";
-    const titleText = document.createElement("h3"); titleText.textContent = clip.name;
-    const gameText = document.createElement("p"); gameText.textContent = clip.game;
-    title.append(titleText, gameText);
-    const cell = (label, value) => {
-      const node = document.createElement("div"); node.className = "library-cell";
-      const key = document.createElement("span"); key.textContent = label;
-      const content = document.createElement("strong"); content.textContent = value || "n/a";
-      node.append(key, content);
-      return node;
+    const card = document.createElement("article"); card.className = "clip-library-card";
+    card.append(thumbnail(clip, true));
+    const body = document.createElement("div"); body.className = "clip-card-body";
+    const heading = document.createElement("div"); heading.className = "clip-card-heading";
+    const title = document.createElement("h3"); title.textContent = clip.name;
+    const game = document.createElement("p"); game.textContent = clip.game || "Spielaufnahme";
+    heading.append(title, game);
+    const meta = document.createElement("div"); meta.className = "clip-card-details";
+    const saved = document.createElement("span"); saved.textContent = clip.date || "";
+    const format = document.createElement("span"); format.textContent = `${clip.duration || "—"} · ${clip.resolution || "n/a"} · ${clip.fps || "n/a"} FPS`;
+    meta.append(saved, format);
+    const actions = document.createElement("div"); actions.className = "clip-card-actions";
+    const play = document.createElement("button"); play.className = "clip-card-play"; play.type = "button"; play.disabled = !clip.file; play.textContent = "Abspielen"; play.addEventListener("click", () => playClip(clip));
+    const more = document.createElement("details"); more.className = "clip-card-more";
+    const summary = document.createElement("summary"); summary.textContent = "···"; summary.title = `Weitere Aktionen für ${clip.name}`; summary.setAttribute("aria-label", `Weitere Aktionen für ${clip.name}`);
+    const menu = document.createElement("div"); menu.className = "clip-actions-menu";
+    const action = (label, callback, className = "") => {
+      const button = document.createElement("button"); button.type = "button"; button.className = className; button.textContent = label;
+      button.addEventListener("click", async () => { more.open = false; await callback(); });
+      menu.append(button);
     };
-    const date = cell("Gespeichert", clip.date);
-    const length = cell("Dauer", clip.duration);
-    const format = cell("Format", `${clip.resolution || "n/a"} / ${clip.fps || "n/a"}`);
-    const actions = document.createElement("div"); actions.className = "row-actions";
-    const play = document.createElement("button"); play.className = "icon-button"; play.type = "button"; play.textContent = "Abspielen"; play.title = "Clip abspielen"; play.disabled = !clip.file; play.addEventListener("click", () => playClip(clip));
-    const open = document.createElement("button"); open.className = "icon-button"; open.type = "button"; open.textContent = "Öffnen"; open.title = "Clip öffnen"; open.addEventListener("click", () => fileAction(clip, "open"));
-    const reveal = document.createElement("button"); reveal.className = "icon-button"; reveal.type = "button"; reveal.textContent = "Ordner"; reveal.title = "Im Explorer anzeigen"; reveal.addEventListener("click", () => fileAction(clip, "reveal"));
-    const rename = document.createElement("button"); rename.className = "icon-button"; rename.type = "button"; rename.textContent = "Umbenennen"; rename.title = "Clip umbenennen"; rename.addEventListener("click", async () => { const nextName = window.prompt("Clip umbenennen", clip.name); if (!nextName || !nextName.trim()) return; try { await renameClipFile(clip, nextName.trim()); persistClips(); renderLibrary(); renderRecent(); showToast("Clip umbenannt."); } catch (error) { showToast(error.message); } });
-    const remove = document.createElement("button"); remove.className = "icon-button"; remove.type = "button"; remove.textContent = "Löschen"; remove.title = "Clip löschen"; remove.addEventListener("click", async () => { if (!window.confirm(`„${clip.name}“ dauerhaft löschen?`)) return; try { await deleteClipFile(clip); } catch (error) { showToast(error.message); return; } removeClip(clip.id); });
-    actions.append(play, open, rename, reveal, remove); row.append(title, date, length, format, actions); list.append(row);
+    action("In Windows öffnen", () => fileAction(clip, "open"));
+    action("Im Ordner anzeigen", () => fileAction(clip, "reveal"));
+    action("Umbenennen", async () => {
+      const nextName = window.prompt("Clip umbenennen", clip.name);
+      if (!nextName || !nextName.trim()) return;
+      try { await renameClipFile(clip, nextName.trim()); persistClips(); renderLibrary(); renderRecent(); showToast("Clip umbenannt."); }
+      catch (error) { showToast(error.message); }
+    });
+    action("Löschen", async () => {
+      if (!window.confirm(`„${clip.name}“ dauerhaft löschen?`)) return;
+      try { await deleteClipFile(clip); }
+      catch (error) { showToast(error.message); return; }
+      removeClip(clip.id);
+    }, "is-danger");
+    more.append(summary, menu);
+    actions.append(play, more);
+    body.append(heading, meta, actions);
+    card.append(body);
+    list.append(card);
   });
 }
 
@@ -1057,7 +1112,17 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
 document.querySelectorAll("[data-view-link]").forEach((link) => link.addEventListener("click", (event) => { event.preventDefault(); setView(link.dataset.viewLink); }));
 $("goToSessionButton").addEventListener("click", () => setView("session"));
 $("openSessionButton").addEventListener("click", () => setView("session"));
-$("emptySessionButton").addEventListener("click", () => setView("session"));
+$("emptySessionButton").addEventListener("click", () => {
+  if (!state.clips.length) { setView("session"); return; }
+  $("clipSearch").value = "";
+  state.filter = "all";
+  document.querySelectorAll(".filter-button").forEach((button) => {
+    const selected = button.dataset.filter === "all";
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  renderLibrary();
+});
 $("retryBackendButton").addEventListener("click", pollBackendStatus);
 $("accountForm").addEventListener("submit", submitAccount);
 $("loginModeButton").addEventListener("click", () => setAuthMode("login"));
@@ -1097,7 +1162,34 @@ $("cleanupPolicySelect").addEventListener("change", (event) => updateEngineConfi
 $("backgroundPrioritySwitch").addEventListener("click", () => updateEngineConfig("backgroundPriority", !$("backgroundPrioritySwitch").classList.contains("is-on")));
 $("replayLengthButton").addEventListener("click", () => { setView("settings"); showToast("Replay-Länge geöffnet."); });
 document.querySelectorAll("[data-hotkey-name]").forEach((button) => button.addEventListener("click", () => beginHotkeyCapture(button.dataset.hotkeyName)));
-document.querySelectorAll(".settings-tab").forEach((tab) => tab.addEventListener("click", () => { document.querySelectorAll(".settings-tab").forEach((item) => item.classList.toggle("is-active", item === tab)); document.querySelectorAll(".settings-group").forEach((group) => group.classList.toggle("is-active", group.dataset.settingsGroup === tab.dataset.settingsTab)); }));
+const settingsTabs = [...document.querySelectorAll(".settings-tab")];
+const settingsTabList = document.querySelector(".settings-nav");
+function activateSettingsTab(tab) {
+  settingsTabs.forEach((item) => {
+    const selected = item === tab;
+    item.classList.toggle("is-active", selected);
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+  });
+  document.querySelectorAll(".settings-group").forEach((group) => group.classList.toggle("is-active", group.dataset.settingsGroup === tab.dataset.settingsTab));
+}
+settingsTabs.forEach((tab) => {
+  tab.tabIndex = tab.classList.contains("is-active") ? 0 : -1;
+  tab.addEventListener("click", () => activateSettingsTab(tab));
+});
+settingsTabList?.addEventListener("keydown", (event) => {
+  const currentIndex = settingsTabs.indexOf(document.activeElement);
+  if (currentIndex < 0) return;
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % settingsTabs.length;
+  else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + settingsTabs.length) % settingsTabs.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = settingsTabs.length - 1;
+  else return;
+  event.preventDefault();
+  settingsTabs[nextIndex].focus();
+  activateSettingsTab(settingsTabs[nextIndex]);
+});
 document.querySelectorAll(".settings-list .switch:not(#microphoneSettingSwitch):not(#backgroundPrioritySwitch):not(#gameAudioSettingsSwitch):not(#separateTracksSwitch)").forEach((button) => button.addEventListener("click", () => toggleSwitch(button)));
 $("microphoneSettingSwitch").addEventListener("click", toggleMicrophone);
 $("playbackDialog").addEventListener("close", () => {
@@ -1106,7 +1198,19 @@ $("playbackDialog").addEventListener("close", () => {
   video.removeAttribute("src");
   video.load();
 });
-document.querySelectorAll(".filter-button").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; document.querySelectorAll(".filter-button").forEach((item) => item.classList.toggle("is-selected", item === button)); renderLibrary(); showToast(button.dataset.filter === "today" ? "Heute-Filter aktiviert." : "Alle Clips angezeigt."); }));
+document.querySelectorAll(".filter-button").forEach((button) => {
+  button.setAttribute("aria-pressed", String(button.classList.contains("is-selected")));
+  button.addEventListener("click", () => {
+    state.filter = button.dataset.filter;
+    document.querySelectorAll(".filter-button").forEach((item) => {
+      const selected = item === button;
+      item.classList.toggle("is-selected", selected);
+      item.setAttribute("aria-pressed", String(selected));
+    });
+    renderLibrary();
+    showToast(button.dataset.filter === "today" ? "Heute-Filter aktiviert." : "Alle Clips angezeigt.");
+  });
+});
 document.addEventListener("keydown", async (event) => {
   if (state.hotkeyCapture) { await finishHotkeyCapture(event); return; }
   if (window.clipfarmNative || event.target.matches("input, select, textarea")) return;

@@ -12,6 +12,7 @@ const stagingDirectory = path.resolve(process.env.CLIPFARM_STAGING_DIR || path.j
 const audioControlPort = Number(process.env.CLIPFARM_AUDIO_CONTROL_PORT || 0);
 const CLIP_POSTROLL_SECONDS = 2;
 const SEGMENT_DURATION_SECONDS = 0.5;
+const CLIP_BUFFER_MARGIN_SECONDS = 15;
 const CAPTURE_STARTUP_TIMEOUT_MS = 15000;
 const logicalProcessors = Math.max(1, os.cpus().length);
 let previousCpu = process.cpuUsage();
@@ -140,6 +141,9 @@ let audioPipeSockets = [];
 let audioHelperReady = false;
 let clipsCache = [];
 let clipsCacheSignature = "";
+let clipSaveInFlight = null;
+let completedSegmentCache = [];
+let completedSegmentCacheDirectory = bufferDirectory;
 
 const knownGames = [
   { game: "Counter-Strike 2", processes: ["cs2.exe", "csgo.exe"] },
@@ -407,7 +411,7 @@ function findFile(directory, filename, depth) {
 }
 
 function ringSegmentCount() {
-  return Math.ceil((engineConfig.replayLength + CLIP_POSTROLL_SECONDS + 5) / SEGMENT_DURATION_SECONDS);
+  return Math.ceil((engineConfig.replayLength + CLIP_POSTROLL_SECONDS + CLIP_BUFFER_MARGIN_SECONDS) / SEGMENT_DURATION_SECONDS);
 }
 
 function getCaptureState() {
@@ -543,24 +547,21 @@ function scheduleMinimizedRetry() {
 }
 
 function clearBufferSegments() {
+  completedSegmentCache = [];
+  completedSegmentCacheDirectory = bufferDirectory;
   if (!fs.existsSync(bufferDirectory)) return;
   for (const name of fs.readdirSync(bufferDirectory)) {
-    if (/^(segment|concat)-\d+(?:\.mp4|\.txt)$/i.test(name)) fs.rmSync(path.join(bufferDirectory, name), { force: true });
+    if (/^(segment|concat)-\d+(?:\.mp4|\.txt)$/i.test(name) || name === "segments.ffconcat" || name.startsWith("clip-snapshot-")) {
+      fs.rmSync(path.join(bufferDirectory, name), { recursive: true, force: true });
+    }
   }
 }
 
 function hasPlayableSegment() {
-  if (!fs.existsSync(bufferDirectory)) return Promise.resolve(false);
-  const candidates = fs.readdirSync(bufferDirectory)
-    .filter((name) => /^segment-\d{3}\.mp4$/i.test(name))
-    .map((name) => path.join(bufferDirectory, name))
-    .map((file) => {
-      try { const stat = fs.statSync(file); return { file, size: stat.size, mtime: stat.mtimeMs }; }
-      catch { return null; }
-    })
-    .filter((item) => item && item.size > 1024)
-    .sort((left, right) => right.mtime - left.mtime)
-    .slice(0, 3);
+  const candidates = listSegments().slice(-3).filter(({ file }) => {
+    try { return fs.statSync(file).size > 1024; }
+    catch { return false; }
+  });
   return Promise.all(candidates.map(({ file }) => new Promise((resolve) => {
     execFile(findFfprobe(), ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", file], { windowsHide: true, timeout: 1200 }, (error, stdout) => resolve(!error && Number(stdout) > 0));
   }))).then((results) => results.some(Boolean));
@@ -568,6 +569,7 @@ function hasPlayableSegment() {
 
 async function startCapture() {
   if (captureProcess && captureState.state === "running") return Promise.resolve(getCaptureState());
+  if (clipSaveInFlight) await clipSaveInFlight.catch(() => {});
   const session = await detectGame();
   const [width, height] = engineConfig.resolution.split("x").map(Number);
   const quality = { performance: "speed", balanced: "balanced", quality: "quality" }[engineConfig.quality];
@@ -668,6 +670,8 @@ async function startCapture() {
     "-b:v", engineConfig.bitrate, "-g", String(Math.max(1, Math.round(engineConfig.fps * SEGMENT_DURATION_SECONDS))), "-pix_fmt", "d3d11",
     "-max_muxing_queue_size", "64",
     "-f", "segment", "-segment_time", String(SEGMENT_DURATION_SECONDS), "-segment_wrap", String(segmentCount),
+    "-segment_list", path.join(bufferDirectory, "segments.ffconcat"), "-segment_list_type", "ffconcat",
+    "-segment_list_size", String(segmentCount),
     "-reset_timestamps", "1", path.join(bufferDirectory, "segment-%03d.mp4")
   );
   captureState = {
@@ -771,6 +775,7 @@ async function updateEngineConfig(patch = {}) {
   const next = normalizeEngineConfig({ ...engineConfig, ...patch });
   const changed = JSON.stringify(previous) !== JSON.stringify(next);
   if (!changed) return getCaptureState();
+  if (clipSaveInFlight) await clipSaveInFlight.catch(() => {});
   const captureFields = ["replayLength", "resolution", "fps", "bitrate", "encoder", "quality", "captureMethod", "microphoneDevice", "microphoneVolume", "gameAudio", "separateTracks", "bufferDirectory", "backgroundPriority"];
   const requiresRestart = captureFields.some((field) => previous[field] !== next[field]);
   const wasRunning = Boolean(captureProcess);
@@ -814,20 +819,40 @@ function setMicrophoneEnabled(enabled) {
 }
 
 function listSegments() {
-  if (!fs.existsSync(bufferDirectory)) return [];
+  if (completedSegmentCacheDirectory !== bufferDirectory) {
+    completedSegmentCache = [];
+    completedSegmentCacheDirectory = bufferDirectory;
+  }
+  const listFile = path.join(bufferDirectory, "segments.ffconcat");
   const segmentCount = ringSegmentCount();
-  const freshAfter = Date.now() - ((engineConfig.replayLength + CLIP_POSTROLL_SECONDS + 5) * 1000);
-  const segments = fs.readdirSync(bufferDirectory)
-    .filter((name) => /^segment-\d{3}\.mp4$/i.test(name))
-    .map((name) => {
-      const file = path.join(bufferDirectory, name);
-      return { file, mtime: fs.statSync(file).mtimeMs };
-    })
-    .filter(({ mtime }) => mtime >= freshAfter)
-    .sort((a, b) => b.mtime - a.mtime)
-    .slice(captureProcess ? 1 : 0, segmentCount + (captureProcess ? 1 : 0))
-    .sort((a, b) => a.mtime - b.mtime);
-  return segments;
+  const freshAfter = Date.now() - ((engineConfig.replayLength + CLIP_POSTROLL_SECONDS + CLIP_BUFFER_MARGIN_SECONDS) * 1000);
+  const useCompletedCache = () => completedSegmentCache.filter((segment) => {
+    try {
+      const stat = fs.statSync(segment.file);
+      return stat.mtimeMs === segment.mtime && stat.size === segment.size && stat.mtimeMs >= freshAfter;
+    } catch { return false; }
+  }).slice(-segmentCount);
+  let listContents;
+  try { listContents = fs.readFileSync(listFile, "utf8"); }
+  catch { return useCompletedCache(); }
+  const seen = new Set();
+  const segments = [];
+  for (const line of listContents.split(/\r?\n/)) {
+    const match = /^file\s+(.+?)\s*$/.exec(line);
+    if (!match) continue;
+    let name = match[1].trim();
+    if ((name.startsWith("'") && name.endsWith("'")) || (name.startsWith('"') && name.endsWith('"'))) name = name.slice(1, -1);
+    name = path.basename(name);
+    if (!/^segment-\d{3}\.mp4$/i.test(name) || seen.has(name)) continue;
+    seen.add(name);
+    const file = path.join(bufferDirectory, name);
+    try {
+      const stat = fs.statSync(file);
+      if (stat.size > 0 && stat.mtimeMs >= freshAfter) segments.push({ file, mtime: stat.mtimeMs, size: stat.size });
+    } catch { /* the ring may rotate while the segment list is being refreshed */ }
+  }
+  if (segments.length) completedSegmentCache = segments;
+  return segments.length ? segments.slice(-segmentCount) : useCompletedCache();
 }
 
 function safeFilePart(value) {
@@ -893,11 +918,33 @@ function stamp(date = new Date()) {
 
 function inferGameName(name) {
   const value = path.basename(String(name || ""), path.extname(String(name || "")));
-  const match = value.match(/^(.*)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/);
+  const match = value.match(/^(.*)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:_\d+)?$/);
   return (match ? match[1] : value).replace(/_/g, " ") || "Game";
 }
 
-async function saveClip(seconds = 30, gameName = "Game", uploadId = null) {
+function uniqueClipPath(directory, gameName) {
+  const baseName = `${safeFilePart(gameName)}_${stamp()}`;
+  let suffix = 0;
+  let outputFile;
+  do {
+    outputFile = path.join(directory, `${baseName}${suffix ? `_${suffix}` : ""}.mp4`);
+    suffix += 1;
+  } while (fs.existsSync(outputFile));
+  return outputFile;
+}
+
+function saveClip(seconds = 30, gameName = "Game", uploadId = null) {
+  if (clipSaveInFlight) return Promise.reject(new Error("Ein Clip wird gerade gesichert. Warte kurz und versuche es erneut."));
+  const operation = saveClipFile(seconds, gameName, uploadId);
+  let trackedOperation;
+  trackedOperation = operation.finally(() => {
+    if (clipSaveInFlight === trackedOperation) clipSaveInFlight = null;
+  });
+  clipSaveInFlight = trackedOperation;
+  return trackedOperation;
+}
+
+async function saveClipFile(seconds = 30, gameName = "Game", uploadId = null) {
   const segmentsAtTrigger = listSegments();
   const readySeconds = Math.floor(segmentsAtTrigger.length * SEGMENT_DURATION_SECONDS);
   if (!readySeconds) {
@@ -917,28 +964,50 @@ async function saveClip(seconds = 30, gameName = "Game", uploadId = null) {
   if (uploadId && !/^[0-9a-f-]{36}$/i.test(String(uploadId))) throw new Error("Ungültige Upload-ID.");
   const destinationDirectory = uploadId ? stagingDirectory : clipDirectory;
   fs.mkdirSync(destinationDirectory, { recursive: true });
-  const listFile = path.join(bufferDirectory, "concat-" + process.pid + "-" + Date.now() + ".txt");
-  const outputFile = path.join(destinationDirectory, uploadId ? String(uploadId) + ".mp4" : safeFilePart(gameName) + "_" + stamp() + ".mp4");
-  fs.writeFileSync(listFile, segments.map(({ file }) => `file '${file.replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
-  const ffmpeg = findFfmpeg();
-  return new Promise((resolve, reject) => {
-    const job = spawn(ffmpeg, ["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listFile, "-map", "0", "-c", "copy", "-movflags", "+faststart", outputFile], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
-    let errorText = "";
-    job.stderr.setEncoding("utf8");
-    job.stderr.on("data", (chunk) => { errorText += chunk; });
-    job.once("error", (error) => { fs.rmSync(listFile, { force: true }); reject(error); });
-    job.once("exit", (code) => {
-      fs.rmSync(listFile, { force: true });
-      if (code === 0 && fs.existsSync(outputFile)) {
-        logEvent("info", "clip saved", { file: outputFile, segments: segments.length, requestedSeconds, postRollSeconds });
-        probeClip(outputFile).then((metadata) => { cleanupStorage(); resolve({ file: outputFile, game: gameName, ...metadata, sizeBytes: fs.statSync(outputFile).size }); }).catch((probeError) => { fs.rmSync(outputFile, { force: true }); logEvent("error", "clip rejected after probe", { file: outputFile, error: probeError.message }); reject(probeError); });
-      } else {
-        const error = errorText.trim() || `clip mux failed with code ${code}`;
-        logEvent("error", "clip mux failed", { error });
-        reject(new Error(error));
-      }
+  const outputFile = uploadId ? path.join(destinationDirectory, `${uploadId}.mp4`) : uniqueClipPath(destinationDirectory, gameName);
+  if (uploadId && fs.existsSync(outputFile)) throw new Error("Für diese Upload-ID wurde bereits ein Clip erstellt.");
+  fs.mkdirSync(bufferDirectory, { recursive: true });
+  const snapshotDirectory = fs.mkdtempSync(path.join(bufferDirectory, "clip-snapshot-"));
+  const listFile = path.join(snapshotDirectory, "concat.txt");
+  try {
+    const snapshotSegments = [];
+    for (let index = 0; index < segments.length; index += 1) {
+      const snapshotFile = path.join(snapshotDirectory, `${String(index).padStart(3, "0")}.mp4`);
+      try { await fs.promises.copyFile(segments[index].file, snapshotFile); }
+      catch (error) { throw new Error(`Ein Replay-Segment konnte nicht für den Clip gesichert werden: ${error.message}`); }
+      snapshotSegments.push(snapshotFile);
+    }
+    fs.writeFileSync(listFile, snapshotSegments.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
+    await new Promise((resolve, reject) => {
+      const job = spawn(findFfmpeg(), ["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listFile, "-map", "0", "-c", "copy", "-movflags", "+faststart", outputFile], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+      let errorText = "";
+      job.stderr.setEncoding("utf8");
+      job.stderr.on("data", (chunk) => { errorText += chunk; });
+      job.once("error", reject);
+      job.once("exit", (code) => {
+        if (code === 0 && fs.existsSync(outputFile)) resolve();
+        else reject(new Error(errorText.trim() || `clip mux failed with code ${code}`));
+      });
+    }).catch((error) => {
+      fs.rmSync(outputFile, { force: true });
+      logEvent("error", "clip mux failed", { error: error.message });
+      throw error;
     });
-  });
+
+    let metadata;
+    try { metadata = await probeClip(outputFile); }
+    catch (probeError) {
+      fs.rmSync(outputFile, { force: true });
+      logEvent("error", "clip rejected after probe", { file: outputFile, error: probeError.message });
+      throw probeError;
+    }
+    const sizeBytes = fs.statSync(outputFile).size;
+    cleanupStorage();
+    logEvent("info", "clip saved", { file: outputFile, segments: segments.length, requestedSeconds, postRollSeconds });
+    return { file: outputFile, game: gameName, ...metadata, sizeBytes };
+  } finally {
+    fs.rmSync(snapshotDirectory, { recursive: true, force: true });
+  }
 }
 
 function probeClip(filename) {
@@ -1157,6 +1226,7 @@ async function shutdown() {
   if (minimizedRetryTimer) clearTimeout(minimizedRetryTimer);
   clearInterval(memorySampleTimer);
   clearInterval(gpuSampleTimer);
+  if (clipSaveInFlight) await clipSaveInFlight.catch(() => {});
   if (captureProcess) await stopCapture();
   logEvent("info", "clipfarm host shutting down");
   if (server.listening) {

@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "clipfarm.ico"
 BACKGROUND = (16, 19, 20, 255)
-ACCENT = (220, 139, 66, 255)
+ACCENT = (196, 239, 105, 255)
 SIZES = (16, 24, 32, 48, 64, 128, 256)
 SCALE = 4
 

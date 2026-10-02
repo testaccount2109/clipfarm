@@ -3,29 +3,46 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';" />
-    <title>clipfarm</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline';" />
+    <title>clipfarm · Start</title>
     <style>
-      :root { color-scheme: dark; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+      :root { color-scheme: dark; font-family: Bahnschrift, "Segoe UI Variable", "Segoe UI", sans-serif; color: #edf0e9; background: #111411; font-synthesis: none; -webkit-font-smoothing: antialiased; }
       * { box-sizing: border-box; }
-      body { display: grid; place-items: center; width: 100vw; height: 100vh; margin: 0; background: #0d0f10; color: #e4e7e5; }
-      main { width: 100%; padding: 0 35px; }
-      .brand { display: flex; align-items: center; gap: 12px; font-size: 19px; font-weight: 650; letter-spacing: -.04em; }
-      .mark { display: grid; grid-template-columns: repeat(3, 5px); align-items: end; gap: 3px; width: 21px; height: 20px; }
-      .mark i { display: block; border-radius: 2px 2px 0 0; background: #dc8b42; }
-      .mark i:nth-child(1) { height: 9px; opacity: .72; } .mark i:nth-child(2) { height: 15px; } .mark i:nth-child(3) { height: 12px; opacity: .84; }
-      p { margin: 16px 0 22px; color: #87908f; font-size: 11px; letter-spacing: .05em; }
-      .track { height: 2px; overflow: hidden; background: #202728; }
-      .track i { display: block; width: 38%; height: 100%; background: #dc8b42; animation: load 1.35s ease-in-out infinite alternate; }
-      @keyframes load { from { transform: translateX(-8%); } to { transform: translateX(172%); } }
-      @media (prefers-reduced-motion: reduce) { .track i { animation: none; width: 42%; } }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body { background: radial-gradient(ellipse at 73% 16%, rgba(196, 239, 105, .08), transparent 38%), #111411; }
+      main { display: grid; width: 100%; height: 100%; grid-template-rows: auto 1fr auto; gap: 21px; padding: 22px 24px 18px; border: 1px solid rgba(229, 238, 221, .09); }
+      header { display: flex; align-items: center; justify-content: space-between; -webkit-app-region: drag; }
+      .brand { display: flex; align-items: center; gap: 9px; }
+      .brand img { width: 30px; height: 30px; }
+      .brand strong { font-size: 18px; font-weight: 700; letter-spacing: -.7px; }
+      .mode { padding: 5px 7px; border: 1px solid rgba(229, 238, 221, .12); color: #aab2a5; font-size: 9px; font-weight: 600; letter-spacing: .08em; }
+      .startup { display: grid; align-content: center; gap: 8px; }
+      .startup h1 { margin: 0; font-size: 20px; font-weight: 640; letter-spacing: -.5px; }
+      .startup p { margin: 0; color: #9aa296; font-size: 11px; line-height: 1.5; }
+      .loading-lane { position: relative; height: 18px; overflow: hidden; margin-top: 3px; border: 1px solid rgba(229, 238, 221, .1); background: rgba(7, 10, 7, .5); }
+      .loading-lane::before { position: absolute; inset: 4px; background: repeating-linear-gradient(90deg, rgba(237, 240, 233, .10) 0 2px, transparent 2px 13px); content: ""; }
+      .loading-sweep { position: absolute; top: 0; bottom: 0; left: -30%; width: 31%; background: linear-gradient(90deg, transparent, rgba(196, 239, 105, .9), transparent); animation: sweep 1.55s cubic-bezier(.45, 0, .55, 1) infinite; }
+      footer { display: flex; align-items: center; justify-content: space-between; color: #8b9388; font-size: 10px; }
+      .startup-state { display: flex; align-items: center; gap: 7px; }
+      .startup-state i { width: 6px; height: 6px; border-radius: 50%; background: #c4ef69; box-shadow: 0 0 0 3px rgba(196, 239, 105, .11); animation: pulse 1.3s ease-in-out infinite; }
+      .local-mark { color: #626b5f; font-size: 9px; letter-spacing: .08em; }
+      @keyframes sweep { to { transform: translateX(425%); } }
+      @keyframes pulse { 50% { opacity: .45; } }
+      @media (prefers-reduced-motion: reduce) { .loading-sweep { animation: none; left: 8%; } .startup-state i { animation: none; } }
     </style>
   </head>
   <body>
     <main>
-      <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span><span>clipfarm</span></div>
-      <p>LOKALE CAPTURE ENGINE WIRD VORBEREITET</p>
-      <div class="track" aria-hidden="true"><i></i></div>
+      <header>
+        <div class="brand"><img src="./desktop/branding/clipfarm-mark.svg" alt="" /><strong>clipfarm</strong></div>
+        <span class="mode">INSTANT REPLAY</span>
+      </header>
+      <section class="startup" aria-labelledby="startupTitle">
+        <h1 id="startupTitle">Replay wird vorbereitet</h1>
+        <p>Clipfarm startet den lokalen Aufnahme-Puffer.</p>
+        <div class="loading-lane" role="progressbar" aria-label="Clipfarm startet" aria-valuetext="Wird vorbereitet"><span class="loading-sweep"></span></div>
+      </section>
+      <footer><span class="startup-state" role="status"><i aria-hidden="true"></i>Aufnahme-Engine wird gestartet</span><span class="local-mark">LOKAL AUF DIESEM PC</span></footer>
     </main>
   </body>
 </html>

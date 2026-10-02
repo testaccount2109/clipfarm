@@ -2,13 +2,14 @@
   "name": "clipfarm",
   "productName": "clipfarm",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Windows-Gaming-Clips mit lokaler Capture-Engine",
   "type": "commonjs",
   "main": "electron-main.js",
   "scripts": {
     "start": "node server.js",
     "desktop": "electron .",
+    "build:updater": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-updater.ps1",
     "build:win": "electron-builder --win nsis",
     "pack:win": "electron-builder --win dir"
   },
@@ -66,11 +67,18 @@
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "nsis": {
+      "include": "build/installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "clipfarm",
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": false,
+      "shortcutName": "Clipfarm",
+      "menuCategory": "Clipfarm",
+      "installerIcon": "desktop/branding/clipfarm.ico",
+      "uninstallerIcon": "desktop/branding/clipfarm.ico",
+      "installerSidebar": "desktop/branding/clipfarm-installer-sidebar.bmp",
+      "installerLanguages": ["de_DE"],
+      "language": 1031,
       "deleteAppDataOnUninstall": false,
       "runAfterFinish": true
     }
