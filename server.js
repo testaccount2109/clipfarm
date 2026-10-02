@@ -747,7 +747,9 @@ async function startCapture() {
     logEvent("info", "capture engine running", { pid });
     setTimeout(async () => {
       if (captureProcess?.pid !== pid || captureState.state !== "running") return;
-      if (await hasPlayableSegment()) {
+      const playableSegment = await hasPlayableSegment();
+      if (captureProcess?.pid !== pid || captureState.state !== "running") return;
+      if (playableSegment) {
         scheduleCaptureHealthCheck(pid);
         return;
       }
