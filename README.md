@@ -19,7 +19,7 @@ Create a Windows installer with:
 npm run build:win
 ```
 
-The NSIS installer is written to `release/clipfarm-Setup-1.0.2.exe`. Settings and logs are stored in the user's clipfarm application-data folder. Existing `engine-config.json` settings and a clip folder that still exists are carried over on first launch.
+The NSIS installer is written to `release/clipfarm-Setup-1.0.3.exe`. Settings and logs are stored in the user's clipfarm application-data folder. Existing `engine-config.json` settings and a clip folder that still exists are carried over on first launch.
 
 The standalone `release/Clipfarm-Updater.exe` checks the latest public GitHub release, verifies the app update archive against its SHA-256 file, and replaces the installed application files directly. It does not download or start the setup installer. Your account session, settings, upload queue, and clips stay in their existing user-data and clip folders. Close Clipfarm before opening the updater. To publish a future Windows release, update the version in `package.json`, commit the change, and push a matching version tag such as `v1.0.3`; GitHub Actions builds and uploads the installer, the app update archive, the updater, and the installer and app-archive checksums.
 

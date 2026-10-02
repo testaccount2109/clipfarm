@@ -2,7 +2,7 @@
   "name": "clipfarm",
   "productName": "clipfarm",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Windows-Gaming-Clips mit lokaler Capture-Engine",
   "type": "commonjs",
   "main": "electron-main.js",
