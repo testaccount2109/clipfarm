@@ -23,6 +23,10 @@ The NSIS installer is written to `release/clipfarm-Setup-1.0.0.exe`. Settings an
 
 For local UI development, `npm start` serves the UI at `http://127.0.0.1:4174`. Global shortcuts and the tray belong to the Electron app. The remote backend origin is centralized in `backend-config.js` and is HTTPS-only.
 
+## Versionsverlauf
+
+The project folder is a local Git repository. Each completed, related change is saved as its own commit. Use `git log --oneline` to browse versions and `git show <commit>` to inspect one. To safely undo a change while preserving the history, run `git revert <commit>`; avoid resetting or amending commits. Personal clips, logs, generated builds, dependencies, and local credentials are excluded by `.gitignore`.
+
 ## Features already in the capture host
 
 - Instant Replay at 15, 30, 60, or 120 seconds, saved with F8 by default
