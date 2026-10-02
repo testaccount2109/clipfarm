@@ -14,6 +14,8 @@ const CLIP_POSTROLL_SECONDS = 2;
 const SEGMENT_DURATION_SECONDS = 0.5;
 const CLIP_BUFFER_MARGIN_SECONDS = 15;
 const CAPTURE_STARTUP_TIMEOUT_MS = 15000;
+const CAPTURE_HEALTH_CHECK_INTERVAL_MS = 2000;
+const CAPTURE_STALE_OUTPUT_TIMEOUT_MS = 10000;
 const logicalProcessors = Math.max(1, os.cpus().length);
 let previousCpu = process.cpuUsage();
 let previousTime = process.hrtime.bigint();
@@ -129,6 +131,7 @@ let gpuSampleInFlight = false;
 let restartAttempts = 0;
 let restartTimer = null;
 let minimizedRetryTimer = null;
+let captureHealthTimer = null;
 let captureRequested = false;
 let shuttingDown = false;
 let audioDevices = [];
@@ -567,6 +570,43 @@ function hasPlayableSegment() {
   }))).then((results) => results.some(Boolean));
 }
 
+function latestCaptureOutputTime() {
+  let latestMtime = 0;
+  try {
+    for (const name of fs.readdirSync(bufferDirectory)) {
+      if (name !== "segments.ffconcat" && !/^segment-\d{3}\.mp4$/i.test(name)) continue;
+      try { latestMtime = Math.max(latestMtime, fs.statSync(path.join(bufferDirectory, name)).mtimeMs); }
+      catch { /* a segment may rotate while the directory is being checked */ }
+    }
+  } catch { /* the output directory may not exist yet */ }
+  return latestMtime;
+}
+
+function scheduleCaptureHealthCheck(pid) {
+  if (captureHealthTimer) clearTimeout(captureHealthTimer);
+  captureHealthTimer = setTimeout(() => {
+    captureHealthTimer = null;
+    if (captureProcess?.pid !== pid || captureState.state !== "running" || shuttingDown) return;
+
+    const lastOutputAt = latestCaptureOutputTime();
+    const staleForMs = lastOutputAt ? Date.now() - lastOutputAt : Infinity;
+    if (staleForMs >= CAPTURE_STALE_OUTPUT_TIMEOUT_MS) {
+      const reason = lastOutputAt
+        ? `FFmpeg hat ${Math.round(staleForMs / 1000)} Sekunden lang keine neuen Replay-Segmente geschrieben`
+        : "FFmpeg hat noch keine Replay-Segmente geschrieben";
+      captureState.error = reason;
+      logEvent("error", "capture engine output stalled", {
+        pid, staleForMs: Number.isFinite(staleForMs) ? staleForMs : null,
+        lastOutputAt: lastOutputAt ? new Date(lastOutputAt).toISOString() : null
+      });
+      captureProcess.kill("SIGINT");
+      return;
+    }
+
+    scheduleCaptureHealthCheck(pid);
+  }, CAPTURE_HEALTH_CHECK_INTERVAL_MS);
+}
+
 async function startCapture() {
   if (captureProcess && captureState.state === "running") return Promise.resolve(getCaptureState());
   if (clipSaveInFlight) await clipSaveInFlight.catch(() => {});
@@ -706,7 +746,11 @@ async function startCapture() {
     applyCapturePriority(pid);
     logEvent("info", "capture engine running", { pid });
     setTimeout(async () => {
-      if (captureProcess?.pid !== pid || captureState.state !== "running" || await hasPlayableSegment()) return;
+      if (captureProcess?.pid !== pid || captureState.state !== "running") return;
+      if (await hasPlayableSegment()) {
+        scheduleCaptureHealthCheck(pid);
+        return;
+      }
       captureState.state = "error";
       captureState.error = captureState.error || `FFmpeg hat innerhalb von ${CAPTURE_STARTUP_TIMEOUT_MS / 1000} Sekunden keinen gültigen Replay-Segmentpuffer erzeugt`;
       logEvent("error", "capture engine produced no playable segment", {
@@ -725,6 +769,8 @@ async function startCapture() {
     scheduleCaptureRestart(error.message);
   });
   captureProcess.once("exit", (code, signal) => {
+    if (captureHealthTimer) clearTimeout(captureHealthTimer);
+    captureHealthTimer = null;
     const wasStopping = captureState.state === "stopping";
     const hadStartupError = captureState.state === "error";
     captureState.state = wasStopping ? "stopped" : hadStartupError ? "error" : code === 0 ? "stopped" : "error";
@@ -756,6 +802,8 @@ async function startCapture() {
 }
 
 function stopCapture() {
+  if (captureHealthTimer) clearTimeout(captureHealthTimer);
+  captureHealthTimer = null;
   if (!captureProcess) { closeAudioPipeline(); captureState = { ...captureState, state: "stopped", pid: null }; return Promise.resolve(getCaptureState()); }
   const processToStop = captureProcess;
   captureState.state = "stopping";
