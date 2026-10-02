@@ -608,6 +608,31 @@ function scheduleCaptureHealthCheck(pid) {
 }
 
 async function startCapture() {
+  try {
+    return await startCaptureInternal();
+  } catch (error) {
+    const message = String(error?.message || error || "Unbekannter Fehler beim Starten der Aufnahme");
+    if (!captureProcess) {
+      closeAudioPipeline();
+      captureState = {
+        ...captureState,
+        state: "error",
+        pid: null,
+        encoder: null,
+        error: message,
+        config: engineConfig
+      };
+    }
+    logEvent("error", "capture start failed", {
+      error: message,
+      captureMethod: captureState.captureMethod,
+      captureState: captureState.state
+    });
+    throw error;
+  }
+}
+
+async function startCaptureInternal() {
   if (captureProcess && captureState.state === "running") return Promise.resolve(getCaptureState());
   if (clipSaveInFlight) await clipSaveInFlight.catch(() => {});
   const session = await detectGame();
@@ -998,9 +1023,19 @@ async function saveClipFile(seconds = 30, gameName = "Game", uploadId = null) {
   const segmentsAtTrigger = listSegments();
   const readySeconds = Math.floor(segmentsAtTrigger.length * SEGMENT_DURATION_SECONDS);
   if (!readySeconds) {
-    const reason = "Es sind keine Replay-Segmente im Puffer vorhanden.";
-    logEvent("warn", "clip save rejected", { reason, availableSeconds: 0, captureState: captureState.state });
-    throw new Error(`${reason} Starte den Puffer bei sichtbarem Spielfenster und spiele mindestens ${SEGMENT_DURATION_SECONDS} Sekunde.`);
+    const reason = captureState.state === "error" && captureState.error
+      ? `Der Replay-Puffer konnte nicht gestartet werden: ${captureState.error}`
+      : captureState.state === "stopped"
+        ? "Der Replay-Puffer ist pausiert."
+        : "Es sind keine Replay-Segmente im Puffer vorhanden.";
+    logEvent("warn", "clip save rejected", {
+      reason,
+      availableSeconds: 0,
+      captureState: captureState.state,
+      captureError: captureState.error,
+      captureRequested
+    });
+    throw new Error(`${reason} ${captureState.state === "error" ? "Prüfe die Aufnahme-Einstellungen." : `Starte den Puffer mit F9 und warte mindestens ${SEGMENT_DURATION_SECONDS} Sekunde.`}`);
   }
   const requestedSeconds = Math.max(SEGMENT_DURATION_SECONDS, Math.min(engineConfig.replayLength, Number(seconds) || engineConfig.replayLength, readySeconds));
   const wasRecordingAtTrigger = Boolean(captureProcess && captureState.state === "running");

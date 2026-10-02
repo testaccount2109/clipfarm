@@ -220,7 +220,13 @@ function formatDuration(seconds) {
 async function saveClip() {
   if (state.clipSaving) return;
   if (state.bufferSeconds <= 0) {
-    const message = state.engineError ? 'Keine Segmente im Puffer. Bei minimiertem Spielfenster kann die Aufnahme nicht starten.' : 'Noch keine Replay-Segmente verfügbar. Starte den Puffer und spiele mindestens eine halbe Sekunde.';
+    const message = state.engineError
+      ? `Aufnahme nicht gestartet: ${state.lastEngineError || 'Prüfe die Aufnahme-Einstellungen.'}`
+      : state.autoStartPending
+        ? 'Der Puffer wartet auf ein sichtbares Spielfenster. Stelle das Spiel wieder her und warte auf die ersten Segmente.'
+        : !state.engineLive
+          ? 'Der Replay-Puffer ist pausiert. Starte ihn mit F9 und warte mindestens eine halbe Sekunde.'
+          : 'Der Replay-Puffer startet noch. Warte auf die ersten Segmente und versuche es erneut.';
     playClipOutcome(false, { message }); showToast(message); return;
   }
   if (!window.location.protocol.startsWith('http')) {
