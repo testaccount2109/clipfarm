@@ -100,9 +100,11 @@ FunctionEnd
 
   WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" "ClipfarmDesktopShortcut" $ClipfarmDesktopSelected
   WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" "ClipfarmStartMenuShortcut" $ClipfarmStartMenuSelected
+  WriteRegStr SHELL_CONTEXT "Software\Clipfarm\Updater" "InstallLocation" "$INSTDIR"
 !macroend
 
 !macro customUnInstall
+  DeleteRegKey SHELL_CONTEXT "Software\Clipfarm\Updater"
   Delete "$newDesktopLink"
   Delete "$oldDesktopLink"
   Delete "$newStartMenuLink"

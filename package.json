@@ -11,7 +11,8 @@
     "desktop": "electron .",
     "build:updater": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-updater.ps1",
     "build:win": "electron-builder --win nsis --publish never",
-    "pack:win": "electron-builder --win dir"
+    "pack:win": "electron-builder --win dir",
+    "pack:update": "electron-builder --win dir --config.directories.output=release-update"
   },
   "devDependencies": {
     "electron": "^44.5.1",

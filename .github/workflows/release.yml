@@ -27,10 +27,13 @@ jobs:
       - name: Build Clipfarm installer
         run: npm run build:win
 
+      - name: Build unpacked Clipfarm update files
+        run: npm run pack:update
+
       - name: Build standalone updater
         run: npm run build:updater
 
-      - name: Create installer checksum
+      - name: Create release archives and checksums
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
@@ -41,6 +44,14 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $(Split-Path -Leaf $installer)" | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii
 
+          $unpacked = "release-update/win-unpacked"
+          if (-not (Test-Path -LiteralPath "$unpacked/clipfarm.exe")) { throw "Unpacked Clipfarm app missing: $unpacked" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $appArchive = "release/clipfarm-App-$version.zip"
+          [System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $unpacked).Path, $appArchive, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+          $hash = (Get-FileHash -LiteralPath $appArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $appArchive)" | Set-Content -LiteralPath "$appArchive.sha256" -Encoding ascii
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -50,6 +61,8 @@ jobs:
           gh release create $env:GITHUB_REF_NAME `
             "release/clipfarm-Setup-$version.exe" `
             "release/clipfarm-Setup-$version.exe.sha256" `
+            "release/clipfarm-App-$version.zip" `
+            "release/clipfarm-App-$version.zip.sha256" `
             "release/Clipfarm-Updater.exe" `
             --repo $env:GITHUB_REPOSITORY `
             --title "Clipfarm $env:GITHUB_REF_NAME" `

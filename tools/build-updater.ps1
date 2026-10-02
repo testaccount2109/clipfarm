@@ -26,6 +26,7 @@ $arguments = @(
     "/reference:System.Drawing.dll",
     "/reference:System.Windows.Forms.dll",
     "/reference:System.Runtime.Serialization.dll",
+    "/reference:System.IO.Compression.dll",
     $sourceFile
 )
 
