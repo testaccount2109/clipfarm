@@ -1,0 +1,236 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Clipfarm Community API",
+    "version": "1.0.0",
+    "description": "HTTPS API for Clipfarm accounts, the chronological community feed, and MP4 uploads."
+  },
+  "servers": [{ "url": "https://benni-projects.de/api/v1" }],
+  "tags": [
+    { "name": "Health" },
+    { "name": "Account" },
+    { "name": "Clips" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Check the Clipfarm API service",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service is ready.",
+            "content": { "application/json": { "schema": { "type": "object", "required": ["ok", "service", "version"], "properties": { "ok": { "type": "boolean", "const": true }, "service": { "type": "string", "const": "clipfarm-community-api" }, "version": { "type": "string" } } } } }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Read this API contract",
+        "security": [],
+        "responses": { "200": { "description": "OpenAPI 3.1 document." } }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": ["Account"],
+        "summary": "Create an account",
+        "security": [],
+        "requestBody": { "$ref": "#/components/requestBodies/Credentials" },
+        "responses": {
+          "201": { "$ref": "#/components/responses/Session" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "409": { "description": "Username is already taken." },
+          "429": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["Account"],
+        "summary": "Start a session",
+        "security": [],
+        "requestBody": { "$ref": "#/components/requestBodies/Credentials" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Session" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/auth/session": {
+      "get": {
+        "tags": ["Account"],
+        "summary": "Read the active account",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Authenticated account.", "content": { "application/json": { "schema": { "type": "object", "properties": { "authenticated": { "type": "boolean" }, "user": { "$ref": "#/components/schemas/User" } } } } } },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": ["Account"],
+        "summary": "Rotate a refresh token and issue a new access token",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["refreshToken"], "properties": { "refreshToken": { "type": "string" } } } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Session" },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": ["Account"],
+        "summary": "Revoke this session",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "204": { "description": "Session revoked." }, "401": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/clips": {
+      "get": {
+        "tags": ["Clips"],
+        "summary": "Read the community feed in newest-first order",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["uploadedAt"] } },
+          { "name": "order", "in": "query", "schema": { "type": "string", "enum": ["desc"] } },
+          { "name": "cursor", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "A page of real uploaded clips.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClipPage" } } } },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "post": {
+        "tags": ["Clips"],
+        "summary": "Upload an MP4 clip",
+        "description": "Streams one MP4 to a temporary file, verifies its container signature and size, then atomically stores it with the clip metadata. Retrying the same Idempotency-Key returns the original stored clip.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128 } },
+          { "name": "X-Clip-Title-Base64", "in": "header", "required": true, "schema": { "type": "string" }, "description": "UTF-8 title encoded as base64url." },
+          { "name": "X-Clip-Game-Base64", "in": "header", "required": true, "schema": { "type": "string" }, "description": "UTF-8 game name encoded as base64url." },
+          { "name": "X-Clip-Duration-Seconds", "in": "header", "required": true, "schema": { "type": "integer", "minimum": 1, "maximum": 86400 } }
+        ],
+        "requestBody": { "required": true, "content": { "video/mp4": { "schema": { "type": "string", "format": "binary" } } } },
+        "responses": {
+          "201": { "description": "Clip committed to storage.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UploadResult" } } } },
+          "200": { "description": "The idempotency key already has a committed clip.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UploadResult" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "413": { "$ref": "#/components/responses/Error" },
+          "415": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/clips/{id}/media": {
+      "get": {
+        "tags": ["Clips"],
+        "summary": "Stream a stored community clip",
+        "description": "Public media URL with byte-range support for native HTML video playback. Clip IDs are random UUIDs.",
+        "security": [],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "MP4 stream.", "content": { "video/mp4": { "schema": { "type": "string", "format": "binary" } } }, "headers": { "Accept-Ranges": { "schema": { "type": "string", "const": "bytes" } } } },
+          "206": { "description": "Requested byte range.", "content": { "video/mp4": { "schema": { "type": "string", "format": "binary" } } }, "headers": { "Content-Range": { "schema": { "type": "string" } } } },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "head": {
+        "tags": ["Clips"],
+        "summary": "Read media headers",
+        "security": [],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": { "200": { "description": "MP4 stream headers." }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "required": ["id", "username"],
+        "properties": { "id": { "type": "string", "format": "uuid" }, "username": { "type": "string" } }
+      },
+      "Clip": {
+        "type": "object",
+        "required": ["id", "title", "creator", "game", "uploadedAt", "durationSeconds", "sizeBytes", "thumbnailUrl", "mediaUrl"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "creator": { "type": "string" },
+          "game": { "type": "string" },
+          "uploadedAt": { "type": "string", "format": "date-time" },
+          "durationSeconds": { "type": "integer" },
+          "sizeBytes": { "type": "integer" },
+          "thumbnailUrl": { "type": ["string", "null"], "format": "uri" },
+          "mediaUrl": { "type": "string", "format": "uri" }
+        }
+      },
+      "ClipPage": {
+        "type": "object",
+        "required": ["clips", "nextCursor", "sort", "viewer"],
+        "properties": {
+          "clips": { "type": "array", "items": { "$ref": "#/components/schemas/Clip" } },
+          "nextCursor": { "type": ["string", "null"] },
+          "sort": { "type": "string", "const": "uploadedAt:desc" },
+          "viewer": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "username": { "type": "string" } } }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": ["accessToken", "accessExpiresAt", "refreshToken", "user"],
+        "properties": {
+          "accessToken": { "type": "string" },
+          "accessExpiresAt": { "type": "string", "format": "date-time" },
+          "refreshToken": { "type": "string" },
+          "user": { "$ref": "#/components/schemas/User" }
+        }
+      },
+      "UploadResult": {
+        "type": "object",
+        "required": ["clip", "stored", "duplicate"],
+        "properties": {
+          "clip": { "$ref": "#/components/schemas/Clip" },
+          "stored": { "type": "boolean", "const": true },
+          "duplicate": { "type": "boolean" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" } }
+      }
+    },
+    "requestBodies": {
+      "Credentials": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": ["username", "password"],
+              "properties": {
+                "username": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Za-z0-9_.-]+$" },
+                "password": { "type": "string", "minLength": 10, "maxLength": 128, "writeOnly": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Session": { "description": "Authenticated session.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
+      "Error": { "description": "Request failed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    }
+  }
+}

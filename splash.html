@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';" />
+    <title>clipfarm</title>
+    <style>
+      :root { color-scheme: dark; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { display: grid; place-items: center; width: 100vw; height: 100vh; margin: 0; background: #0d0f10; color: #e4e7e5; }
+      main { width: 100%; padding: 0 35px; }
+      .brand { display: flex; align-items: center; gap: 12px; font-size: 19px; font-weight: 650; letter-spacing: -.04em; }
+      .mark { display: grid; grid-template-columns: repeat(3, 5px); align-items: end; gap: 3px; width: 21px; height: 20px; }
+      .mark i { display: block; border-radius: 2px 2px 0 0; background: #dc8b42; }
+      .mark i:nth-child(1) { height: 9px; opacity: .72; } .mark i:nth-child(2) { height: 15px; } .mark i:nth-child(3) { height: 12px; opacity: .84; }
+      p { margin: 16px 0 22px; color: #87908f; font-size: 11px; letter-spacing: .05em; }
+      .track { height: 2px; overflow: hidden; background: #202728; }
+      .track i { display: block; width: 38%; height: 100%; background: #dc8b42; animation: load 1.35s ease-in-out infinite alternate; }
+      @keyframes load { from { transform: translateX(-8%); } to { transform: translateX(172%); } }
+      @media (prefers-reduced-motion: reduce) { .track i { animation: none; width: 42%; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span><span>clipfarm</span></div>
+      <p>LOKALE CAPTURE ENGINE WIRD VORBEREITET</p>
+      <div class="track" aria-hidden="true"><i></i></div>
+    </main>
+  </body>
+</html>

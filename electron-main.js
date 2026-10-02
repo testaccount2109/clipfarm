@@ -1,0 +1,660 @@
+const { app, BrowserWindow, Tray, Menu, Notification, nativeImage, globalShortcut, ipcMain, dialog, screen, safeStorage } = require("electron");
+const fs = require("node:fs");
+const path = require("node:path");
+const { execFile } = require("node:child_process");
+const crypto = require("node:crypto");
+const https = require("node:https");
+const backendConfig = require("./backend-config");
+const { CommunityService } = require("./community-service");
+
+app.setName("clipfarm");
+app.setAppUserModelId("de.clipfarm.desktop");
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
+const hasSingleInstance = app.requestSingleInstanceLock();
+if (!hasSingleInstance) app.quit();
+
+let localHost = null;
+let baseUrl = null;
+let mainWindow = null;
+let splashWindow = null;
+let tray = null;
+let closing = false;
+let shutdownPromise = null;
+let startupError = null;
+let activeHotkeys = {};
+let pendingClipOutcomes = [];
+let clipOverlayWindow = null;
+let pendingOverlayOutcome = null;
+let clipOverlayHideTimer = null;
+let clipOverlayReady = false;
+let sessionStorePath = null;
+let pendingUploadDirectory = null;
+let uploadManifestPath = null;
+let accountUser = null;
+let accessToken = null;
+let accessTokenExpiresAt = 0;
+let refreshToken = null;
+let sessionRemembered = false;
+let sessionRestorePromise = null;
+let clipSaveInFlight = null;
+let uploadQueue = new Map();
+let uploadWorkers = new Set();
+let uploadRetryTimer = null;
+let community = null;
+
+const productRoot = app.getAppPath();
+const iconPath = app.isPackaged
+  ? path.join(process.resourcesPath, "clipfarm.ico")
+  : path.join(__dirname, "desktop", "branding", "clipfarm.ico");
+const appIcon = nativeImage.createFromPath(iconPath);
+let gameIconProcessId = null;
+let gameIconDataUrl = null;
+
+function normalizeGameName(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function findExecutableBelow(directory, executableName, maxDepth = 5) {
+  const wantedName = path.basename(executableName).toLowerCase();
+  if (!wantedName || !directory || !fs.existsSync(directory)) return null;
+  const pending = [{ directory, depth: 0 }];
+  const skippedDirectories = new Set([".egstore", "engine", "plugins", "saved", "node_modules", ".git"]);
+  while (pending.length) {
+    const current = pending.pop();
+    let entries;
+    try { entries = fs.readdirSync(current.directory, { withFileTypes: true }); }
+    catch { continue; }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.toLowerCase() === wantedName) return path.join(current.directory, entry.name);
+      if (entry.isDirectory() && current.depth < maxDepth && !skippedDirectories.has(entry.name.toLowerCase())) {
+        pending.push({ directory: path.join(current.directory, entry.name), depth: current.depth + 1 });
+      }
+    }
+  }
+  return null;
+}
+
+function findInstalledGameExecutable(session) {
+  const processName = path.basename(String(session.process || ""));
+  const gameName = normalizeGameName(session.game);
+  if (!processName || !gameName) return null;
+  const installRoots = [];
+  const epicManifestDirectory = path.join(process.env.PROGRAMDATA || "C:\\ProgramData", "Epic", "EpicGamesLauncher", "Data", "Manifests");
+  try {
+    for (const name of fs.readdirSync(epicManifestDirectory)) {
+      if (!name.toLowerCase().endsWith(".item")) continue;
+      try {
+        const manifest = JSON.parse(fs.readFileSync(path.join(epicManifestDirectory, name), "utf8"));
+        if (normalizeGameName(manifest.DisplayName) === gameName && manifest.InstallLocation) installRoots.push(manifest.InstallLocation);
+      } catch { /* ignore malformed launcher manifests */ }
+    }
+  } catch { /* Epic Games Launcher is optional */ }
+
+  const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const steamRoots = [path.join(programFilesX86, "Steam"), path.join(process.env.ProgramFiles || "C:\\Program Files", "Steam")];
+  for (const steamRoot of steamRoots) {
+    const libraries = new Set([steamRoot]);
+    try {
+      const folders = fs.readFileSync(path.join(steamRoot, "steamapps", "libraryfolders.vdf"), "utf8");
+      for (const match of folders.matchAll(/"path"\s+"([^"]+)"/gi)) libraries.add(match[1].replace(/\\\\/g, "\\"));
+    } catch { /* a single Steam library is enough when no library list is available */ }
+    for (const library of libraries) {
+      const steamApps = path.join(library, "steamapps");
+      try {
+        for (const manifestName of fs.readdirSync(steamApps)) {
+          if (!/^appmanifest_\d+\.acf$/i.test(manifestName)) continue;
+          try {
+            const manifest = fs.readFileSync(path.join(steamApps, manifestName), "utf8");
+            const name = manifest.match(/"name"\s+"([^"]+)"/i)?.[1];
+            const installDirectory = manifest.match(/"installdir"\s+"([^"]+)"/i)?.[1];
+            if (normalizeGameName(name) === gameName && installDirectory) installRoots.push(path.join(steamApps, "common", installDirectory));
+          } catch { /* ignore malformed Steam manifests */ }
+        }
+      } catch { /* this Steam library is unavailable */ }
+    }
+  }
+
+  for (const root of [...new Set(installRoots)]) {
+    const executable = findExecutableBelow(root, processName);
+    if (executable) return executable;
+  }
+  return null;
+}
+
+function prepareUserData() {
+  const dataDirectory = app.getPath("userData");
+  fs.mkdirSync(dataDirectory, { recursive: true });
+  const destination = path.join(dataDirectory, "engine-config.json");
+
+  if (!fs.existsSync(destination)) {
+    const localAppData = process.env.LOCALAPPDATA || app.getPath("appData");
+    const candidates = [
+      path.join(localAppData, "Spool", "engine-config.json"),
+      path.join(productRoot, "engine-config.json")
+    ].filter((candidate) => fs.existsSync(candidate));
+    candidates.sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+    if (candidates.length) {
+      const initialConfig = JSON.parse(fs.readFileSync(candidates[0], "utf8"));
+      if (!initialConfig.clipDirectory || !path.isAbsolute(initialConfig.clipDirectory)) {
+        initialConfig.clipDirectory = path.join(app.getPath("videos"), "clipfarm");
+      }
+      if (!fs.existsSync(initialConfig.clipDirectory)) {
+        initialConfig.clipDirectory = path.join(app.getPath("videos"), "clipfarm");
+      }
+      if (!initialConfig.bufferDirectory || !path.isAbsolute(initialConfig.bufferDirectory)) {
+        initialConfig.bufferDirectory = path.join(app.getPath("temp"), "clipfarm-buffer");
+      }
+      fs.writeFileSync(destination, `${JSON.stringify(initialConfig, null, 2)}\n`, "utf8");
+    }
+  }
+
+  process.env.SPOOL_DATA_DIR = dataDirectory;
+  process.env.CLIPFARM_PORT = "0";
+  pendingUploadDirectory = path.join(dataDirectory, "pending-uploads");
+  uploadManifestPath = path.join(dataDirectory, "pending-uploads.json");
+  sessionStorePath = path.join(dataDirectory, "account-session.bin");
+  fs.mkdirSync(pendingUploadDirectory, { recursive: true });
+  process.env.CLIPFARM_STAGING_DIR = pendingUploadDirectory;
+  process.env.CLIPFARM_AUDIO_HELPER = app.isPackaged
+    ? path.join(process.resourcesPath, "clipfarm-audio.exe")
+    : path.join(productRoot, "tools", "clipfarm-audio.exe");
+}
+
+function toElectronAccelerator(specification) {
+  const parts = String(specification || "").toUpperCase().split("+").filter(Boolean);
+  const key = parts.pop();
+  const modifiers = { CTRL: "Ctrl", ALT: "Alt", SHIFT: "Shift", WIN: "Super" };
+  if (!key || parts.some((part) => !modifiers[part])) return null;
+  return [...parts.map((part) => modifiers[part]), key].join("+");
+}
+
+function notify(title, body) {
+  if (!Notification.isSupported()) return;
+  new Notification({ title, body, silent: true }).show();
+}
+
+function showClipOutcomeOverlay(outcome) {
+  if (!clipOverlayWindow || clipOverlayWindow.isDestroyed()) createClipOverlayWindow();
+  const overlay = clipOverlayWindow;
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const { x, y, width, height } = display.bounds;
+  const overlayWidth = 360;
+  const overlayHeight = 92;
+  overlay.setBounds({
+    x: Math.round(x + 22),
+    y: Math.round(y + height - overlayHeight - 24),
+    width: overlayWidth,
+    height: overlayHeight
+  });
+  pendingOverlayOutcome = outcome;
+  if (clipOverlayReady) presentClipOutcomeOverlay();
+}
+
+function presentClipOutcomeOverlay() {
+  const overlay = clipOverlayWindow;
+  if (!overlay || overlay.isDestroyed() || !clipOverlayReady || !pendingOverlayOutcome) return;
+  const outcome = pendingOverlayOutcome;
+  pendingOverlayOutcome = null;
+  overlay.webContents.send("clipfarm:overlay-outcome", outcome);
+  overlay.setAlwaysOnTop(true, "screen-saver");
+  overlay.showInactive();
+  overlay.moveTop();
+  const duration = outcome.outcome === "saving" ? 2600 : 3900;
+  clearTimeout(clipOverlayHideTimer);
+  clipOverlayHideTimer = setTimeout(() => {
+    if (clipOverlayWindow && !clipOverlayWindow.isDestroyed()) clipOverlayWindow.hide();
+  }, duration);
+}
+
+function createClipOverlayWindow() {
+  clipOverlayWindow = new BrowserWindow({
+    width: 360,
+    height: 92,
+    x: 22,
+    y: 22,
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    focusable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    webPreferences: {
+      preload: path.join(__dirname, "overlay-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false
+    }
+  });
+  const overlay = clipOverlayWindow;
+  clipOverlayReady = false;
+  overlay.setMenuBarVisibility(false);
+  overlay.setAlwaysOnTop(true, "screen-saver");
+  overlay.setContentProtection(true);
+  overlay.setIgnoreMouseEvents(true, { forward: true });
+  overlay.once("closed", () => {
+    if (clipOverlayWindow === overlay) {
+      clipOverlayWindow = null;
+      clipOverlayReady = false;
+    }
+    pendingOverlayOutcome = null;
+    clearTimeout(clipOverlayHideTimer);
+  });
+  overlay.webContents.once("did-finish-load", () => {
+    clipOverlayReady = true;
+    presentClipOutcomeOverlay();
+  });
+  overlay.loadFile(path.join(__dirname, "overlay.html")).catch(() => overlay.hide());
+}
+
+function reportClipOutcome(outcome, message = "") {
+  const result = { outcome, message: String(message || "").slice(0, 180) };
+  showClipOutcomeOverlay(result);
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed() || mainWindow.webContents.isLoading()) {
+    pendingClipOutcomes.push(result);
+    pendingClipOutcomes = pendingClipOutcomes.slice(-4);
+    return;
+  }
+  mainWindow.webContents.send("clipfarm:clip-outcome", result);
+}
+
+function flushClipOutcomes() {
+  const outcomes = pendingClipOutcomes;
+  pendingClipOutcomes = [];
+  outcomes.forEach((outcome) => mainWindow.webContents.send("clipfarm:clip-outcome", outcome));
+}
+
+async function api(pathname, options = {}) {
+  if (!baseUrl) throw new Error("Clipfarm ist noch nicht gestartet.");
+  const response = await fetch(`${baseUrl}${pathname}`, options);
+  let payload = {};
+  try { payload = await response.json(); } catch { /* an empty response is reported below */ }
+  if (!response.ok) throw new Error(payload.error || `Clipfarm antwortet mit ${response.status}.`);
+  return payload;
+}
+
+async function getBackendStatus() {
+  const checkedAt = new Date().toISOString();
+  try {
+    const response = await fetch(`${backendConfig.apiBase}${backendConfig.healthPath}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(7000),
+      redirect: "error"
+    });
+    const basicAuthRequired = response.status === 401 && /\bBasic\b/i.test(response.headers.get("www-authenticate") || "");
+    let payload = {};
+    try { payload = await response.json(); } catch { /* Unrecognized API responses are reported below. */ }
+    const available = response.ok && payload.ok === true && payload.service === "clipfarm-community-api";
+    return {
+      origin: backendConfig.origin,
+      checkedAt,
+      reachable: true,
+      secure: true,
+      status: response.status,
+      basicAuthRequired,
+      available,
+      message: basicAuthRequired
+        ? "Der API-Endpunkt verlangt HTTP-Basic-Auth. Zugangsdaten werden nicht gesendet."
+        : available
+          ? "Clipfarm-API ist über HTTPS erreichbar."
+          : response.ok
+            ? "Der Server antwortet, aber die Clipfarm-API wurde nicht bestätigt."
+          : `Der Server antwortet mit HTTP ${response.status}.`
+    };
+  } catch (error) {
+    return {
+      origin: backendConfig.origin,
+      checkedAt,
+      reachable: false,
+      secure: true,
+      status: null,
+      basicAuthRequired: false,
+      available: false,
+      message: error.name === "TimeoutError"
+        ? "Zeitüberschreitung beim Verbinden mit dem Clipfarm-Server."
+        : "Der Clipfarm-Server ist derzeit nicht erreichbar."
+    };
+  }
+}
+
+function isTrustedRenderer(event) {
+  if (!baseUrl || !event.senderFrame) return false;
+  try {
+    return new URL(event.senderFrame.url).origin === new URL(baseUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+async function saveReplay() {
+  showClipOutcomeOverlay({ outcome: "saving", message: "2 Sekunden Nachlauf – Clip wird gesichert." });
+  try {
+    const [settings, session] = await Promise.all([api("/api/config"), api("/api/session")]);
+    const result = await api("/api/clip/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seconds: settings.config.replayLength, game: session.game || "Game" })
+    });
+    if (community) {
+      try { await community.queueClip(result.clip, true); }
+      catch (uploadError) { notify("Clipfarm-Upload", uploadError.message); }
+    }
+    reportClipOutcome("success", path.basename(result.clip.file));
+  } catch (error) {
+    reportClipOutcome("failed", error.message);
+    throw error;
+  }
+}
+
+async function toggleReplay() {
+  const engine = await api("/api/engine");
+  const next = await api(engine.state === "running" ? "/api/engine/stop" : "/api/engine/start", { method: "POST" });
+  notify("clipfarm", next.state === "running" ? "Instant Replay läuft." : "Instant Replay pausiert.");
+}
+
+async function toggleMicrophone() {
+  const result = await api("/api/audio/mic", { method: "POST" });
+  notify("clipfarm", result.micEnabled ? "Mikrofon aktiviert." : "Mikrofon deaktiviert.");
+}
+
+function runHotkey(action) {
+  const actions = { save: saveReplay, toggle: toggleReplay, microphone: toggleMicrophone };
+  actions[action]?.().catch((error) => { if (action !== "save") notify("clipfarm", error.message); });
+}
+
+function registerGlobalHotkeys(hotkeys = {}) {
+  const previous = activeHotkeys;
+  const candidate = { save: hotkeys.save, toggle: hotkeys.toggle, microphone: hotkeys.microphone };
+  const attempt = (specifications) => {
+    globalShortcut.unregisterAll();
+    const registered = [];
+    const failed = [];
+    for (const action of ["save", "toggle", "microphone"]) {
+      const specification = String(specifications[action] || "");
+      const accelerator = toElectronAccelerator(specification);
+      if (!accelerator || !globalShortcut.register(accelerator, () => runHotkey(action))) {
+        failed.push(specification || action);
+        continue;
+      }
+      registered.push(specification);
+    }
+    return { registered, failed };
+  };
+
+  const result = attempt(candidate);
+  if (!result.failed.length) {
+    activeHotkeys = candidate;
+    return result;
+  }
+
+  const restored = attempt(previous);
+  if (!restored.failed.length) activeHotkeys = previous;
+  else activeHotkeys = {};
+  return { ...result, restored: restored.failed.length === 0 };
+}
+
+function openMainWindow() {
+  if (!baseUrl || closing) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray() {
+  if (tray || !fs.existsSync(iconPath)) return;
+  tray = new Tray(appIcon.isEmpty() ? nativeImage.createFromPath(iconPath) : appIcon);
+  tray.setToolTip("clipfarm · Lokales Instant Replay");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "clipfarm öffnen", click: openMainWindow },
+    { type: "separator" },
+    { label: "Letzten Clip speichern", click: () => runHotkey("save") },
+    { label: "Replay an / aus", click: () => runHotkey("toggle") },
+    { label: "Mikrofon an / aus", click: () => runHotkey("microphone") },
+    { type: "separator" },
+    { label: "Beenden", click: () => app.quit() }
+  ]));
+  tray.on("double-click", openMainWindow);
+}
+
+function createSplashWindow() {
+  splashWindow = new BrowserWindow({
+    width: 390,
+    height: 224,
+    frame: false,
+    resizable: false,
+    movable: true,
+    show: true,
+    center: true,
+    backgroundColor: "#0d0f10",
+    icon: iconPath,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+  });
+  if (!appIcon.isEmpty()) splashWindow.setIcon(appIcon);
+  splashWindow.removeMenu();
+  splashWindow.loadFile(path.join(__dirname, "splash.html"));
+}
+
+function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    title: "clipfarm",
+    width: 1280,
+    height: 840,
+    minWidth: 1060,
+    minHeight: 680,
+    show: false,
+    autoHideMenuBar: true,
+    backgroundColor: "#0d0f10",
+    icon: iconPath,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true
+    }
+  });
+  if (!appIcon.isEmpty()) mainWindow.setIcon(appIcon);
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event, destination) => {
+    try {
+      if (new URL(destination).origin !== new URL(baseUrl).origin) event.preventDefault();
+    } catch {
+      event.preventDefault();
+    }
+  });
+  mainWindow.on("close", (event) => {
+    if (!closing) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.show();
+    if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+    splashWindow = null;
+    if (startupError) mainWindow.webContents.send("clipfarm:startup-error", startupError);
+  });
+  mainWindow.webContents.once("did-finish-load", flushClipOutcomes);
+  mainWindow.loadURL(baseUrl).catch((error) => {
+    dialog.showErrorBox("clipfarm konnte nicht geöffnet werden", error.message);
+    app.quit();
+  });
+}
+
+ipcMain.handle("clipfarm:hotkeys:sync", (event, hotkeys) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return registerGlobalHotkeys(hotkeys);
+});
+ipcMain.handle("clipfarm:backend:status", async (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return community ? community.getBackendStatus() : getBackendStatus();
+});
+ipcMain.handle("clipfarm:account:get", async (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return community ? community.getAccount() : { user: null, offline: true };
+});
+ipcMain.handle("clipfarm:account:login", async (event, mode, credentials) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community || !["login", "register"].includes(mode)) throw new Error("Anmeldung ist derzeit nicht verfügbar.");
+  return community.authenticate(mode, credentials);
+});
+ipcMain.handle("clipfarm:account:logout", async (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community) return true;
+  try {
+    const account = await community.getAccount();
+    if (account.user) await community.authenticatedRequest("/auth/logout", { method: "POST" });
+  } catch { /* Forget the local session even when the server is offline. */ }
+  await community.clearSession();
+  return true;
+});
+ipcMain.handle("clipfarm:feed:get", async (event, cursor) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community) throw new Error("Die Konto-API wird noch gestartet.");
+  return community.getFeed(cursor === undefined ? null : cursor);
+});
+ipcMain.handle("clipfarm:upload:list", (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return community ? community.getUploads() : [];
+});
+ipcMain.handle("clipfarm:upload:queue", async (event, clip) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community) throw new Error("Die Upload-Warteschlange wird noch gestartet.");
+  return community.queueClip(clip, true);
+});
+ipcMain.handle("clipfarm:upload:retry", async (event, id) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community) throw new Error("Die Upload-Warteschlange wird noch gestartet.");
+  return community.retryUpload(id);
+});
+ipcMain.handle("clipfarm:clip-outcome", (event, result) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!result || !["success", "failed", "saving", "test"].includes(result.outcome)) return false;
+  showClipOutcomeOverlay({ outcome: result.outcome, message: String(result.message || "").slice(0, 180) });
+  return true;
+});
+ipcMain.handle("clipfarm:game-icon", async (event, requestedProcessId) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  const processId = Number(requestedProcessId);
+  if (!Number.isSafeInteger(processId) || processId <= 0) return null;
+  if (gameIconProcessId === processId && gameIconDataUrl) return gameIconDataUrl;
+  try {
+    const session = await api("/api/session");
+    if (Number(session.processId) !== processId) return null;
+    const command = `$target=Get-Process -Id ${processId} -ErrorAction Stop; if($target.Path){[Console]::WriteLine($target.Path)}`;
+    const executablePath = await new Promise((resolve) => {
+      execFile("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], { windowsHide: true, timeout: 4000 }, (error, stdout) => {
+        resolve(!error ? String(stdout || "").trim() : "");
+      });
+    });
+    const iconPath = executablePath && path.isAbsolute(executablePath) && fs.existsSync(executablePath)
+      ? executablePath
+      : findInstalledGameExecutable(session);
+    const icon = iconPath
+      ? await app.getFileIcon(iconPath, { size: "large" })
+      : nativeImage.createEmpty();
+    gameIconProcessId = processId;
+    gameIconDataUrl = icon.isEmpty() ? null : icon.toDataURL();
+    return gameIconDataUrl;
+  } catch {
+    return null;
+  }
+});
+
+async function startClipfarm() {
+  createSplashWindow();
+  prepareUserData();
+  localHost = require("./server.js");
+  const port = await localHost.startServer(0);
+  baseUrl = `http://127.0.0.1:${port}`;
+  community = new CommunityService({
+    safeStorage,
+    sessionPath: sessionStorePath,
+    stagingDirectory: pendingUploadDirectory,
+    getClipDirectory: async () => {
+      const config = await api("/api/config");
+      if (!config.config || typeof config.config.clipDirectory !== "string") throw new Error("Der lokale Clip-Ordner ist nicht verfügbar.");
+      return config.config.clipDirectory;
+    }
+  });
+  community.on("upload-update", (update) => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("clipfarm:upload:update", update);
+    }
+  });
+  community.on("account", (user) => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("clipfarm:account:update", user);
+    }
+  });
+  community.on("upload-committed", (result) => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("clipfarm:upload:committed", result);
+    }
+    if (result.cleanupWarning) notify("Clipfarm-Upload", result.cleanupWarning);
+    else notify("Clipfarm", "Dein Clip ist im Feed angekommen.");
+  });
+  await community.initialize();
+  createClipOverlayWindow();
+
+  const settings = await api("/api/config");
+  const shortcutState = registerGlobalHotkeys(settings.config.hotkeys);
+  if (shortcutState.failed.length) {
+    startupError = `Diese globalen Hotkeys sind bereits belegt und konnten nicht aktiviert werden: ${shortcutState.failed.join(", ")}`;
+  }
+
+  if (process.env.CLIPFARM_START_REPLAY !== "0") {
+    try {
+      await api("/api/engine/start", { method: "POST" });
+    } catch (error) {
+      startupError = [startupError, `Replay konnte nicht automatisch starten: ${error.message}`].filter(Boolean).join("\n");
+    }
+  }
+
+  createTray();
+  createMainWindow();
+}
+
+async function stopClipfarm() {
+  globalShortcut.unregisterAll();
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+  clearTimeout(clipOverlayHideTimer);
+  if (clipOverlayWindow && !clipOverlayWindow.isDestroyed()) clipOverlayWindow.destroy();
+  clipOverlayWindow = null;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.destroy();
+  if (localHost) await localHost.shutdown();
+}
+
+if (hasSingleInstance) {
+  app.on("second-instance", openMainWindow);
+  app.whenReady().then(() => startClipfarm()).catch(async (error) => {
+    dialog.showErrorBox("clipfarm konnte nicht gestartet werden", error.message);
+    await stopClipfarm().catch(() => {});
+    app.quit();
+  });
+  app.on("activate", openMainWindow);
+  app.on("before-quit", (event) => {
+    if (closing) return;
+    event.preventDefault();
+    if (shutdownPromise) return;
+    closing = true;
+    shutdownPromise = stopClipfarm().finally(() => app.quit());
+  });
+}

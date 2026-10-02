@@ -1,0 +1,6 @@
+* text=auto
+*.exe binary
+*.ico binary
+*.mp3 binary
+*.mp4 binary
+*.png binary

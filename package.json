@@ -1,0 +1,78 @@
+{
+  "name": "clipfarm",
+  "productName": "clipfarm",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Windows-Gaming-Clips mit lokaler Capture-Engine",
+  "type": "commonjs",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "node server.js",
+    "desktop": "electron .",
+    "build:win": "electron-builder --win nsis",
+    "pack:win": "electron-builder --win dir"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "de.clipfarm.desktop",
+    "productName": "clipfarm",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron-main.js",
+      "backend-config.js",
+      "community-service.js",
+      "preload.js",
+      "overlay-preload.js",
+      "overlay.html",
+      "overlay.css",
+      "overlay.js",
+      "splash.html",
+      "index.html",
+      "assets/clipfarm-icons.svg",
+      "desktop/branding/clipfarm-mark.svg",
+      "styles.css",
+      "app.js",
+      "server.js",
+      "engine-config.json",
+      "README.md",
+      "erfolgreich.mp3",
+      "failed.mp3"
+    ],
+    "extraResources": [
+      {
+        "from": "desktop/branding/clipfarm.ico",
+        "to": "clipfarm.ico"
+      },
+      {
+        "from": "tools/clipfarm-audio.exe",
+        "to": "clipfarm-audio.exe"
+      }
+    ],
+    "win": {
+      "icon": "desktop/branding/clipfarm.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "clipfarm",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
+  }
+}

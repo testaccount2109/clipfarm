@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#111411" />
+    <meta name="description" content="clipfarm — Gaming-Momente aufnehmen und teilen." />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' https://benni-projects.de; connect-src 'self';" />
+    <title>clipfarm</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="account-gate" id="accountGate" aria-labelledby="authHeading">
+      <header class="auth-brand">
+        <img src="./desktop/branding/clipfarm-mark.svg" alt="" />
+        <span><strong>clipfarm</strong><small>Spielmomente festhalten</small></span>
+      </header>
+      <div class="auth-layout">
+        <section class="auth-story">
+          <p class="section-label">Dein nächster Spielmoment</p>
+          <h1 id="authHeading">Gute Runden bleiben nicht nur auf deinem PC.</h1>
+          <p class="auth-lead">Melde dich an, um echte Clips mit der Community zu teilen. Deine Aufnahme läuft lokal weiter, auch wenn du das Fenster schließt.</p>
+          <div class="auth-timeline" aria-hidden="true">
+            <span class="auth-mark"></span><i></i><i></i><i></i><span class="auth-playhead"></span><i></i><i></i><span class="auth-mark"></span>
+          </div>
+          <div class="auth-secure-state" id="accountGateStatus" aria-live="polite">
+            <span class="status-dot" id="accountGateDot"></span><span>Serververbindung wird geprüft …</span>
+          </div>
+        </section>
+        <section class="auth-panel" aria-labelledby="authFormTitle">
+          <div class="auth-heading"><p class="section-label">Clipfarm-Konto</p><h2 id="authFormTitle">Willkommen zurück</h2></div>
+          <div class="auth-mode" role="tablist" aria-label="Anmelden oder registrieren">
+            <button class="auth-mode-button is-selected" id="loginModeButton" type="button" role="tab" aria-selected="true" data-auth-mode="login">Anmelden</button>
+            <button class="auth-mode-button" id="registerModeButton" type="button" role="tab" aria-selected="false" data-auth-mode="register">Konto erstellen</button>
+          </div>
+          <form class="auth-form" id="accountForm">
+            <label for="authUsername">Username
+              <input id="authUsername" name="username" type="text" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_.-]+" autocomplete="username" spellcheck="false" />
+              <small>3–32 Zeichen: Buchstaben, Zahlen, Punkt, Bindestrich oder Unterstrich.</small>
+            </label>
+            <label for="authPassword">Passwort
+              <input id="authPassword" name="password" type="password" required minlength="10" maxlength="128" autocomplete="current-password" />
+              <small>Mindestens 10 Zeichen.</small>
+            </label>
+            <p class="auth-error" id="authError" role="alert" hidden></p>
+            <button class="primary-button auth-submit" id="authSubmitButton" type="submit">Anmelden</button>
+          </form>
+          <p class="auth-footnote">Deine Anmeldung wird verschlüsselt übertragen. Clipfarm speichert nur die geschützte Sitzung, niemals dein Passwort.</p>
+        </section>
+      </div>
+    </main>
+
+    <div class="app-shell" id="appShell" hidden>
+      <aside class="sidebar" aria-label="Hauptnavigation">
+        <a class="brand-lockup" href="#" aria-label="clipfarm Startseite" data-view-link="feed">
+          <img class="brand-mark" src="./desktop/branding/clipfarm-mark.svg" alt="" />
+          <span class="brand-copy"><strong>clipfarm</strong><small>Gaming-Capture</small></span>
+        </a>
+
+        <p class="nav-caption">Arbeitsbereich</p>
+        <nav class="nav-stack">
+          <button class="nav-item is-active" data-view="feed" type="button" aria-current="page">
+            <svg class="icon nav-icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#feed"></use></svg><span>Feed</span>
+          </button>
+          <button class="nav-item" data-view="session" type="button">
+            <svg class="icon nav-icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#session"></use></svg><span>Session</span>
+          </button>
+          <button class="nav-item" data-view="library" type="button">
+            <svg class="icon nav-icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#clips"></use></svg><span>Meine Clips</span><span class="nav-count" id="clipCount">0</span>
+          </button>
+          <button class="nav-item" data-view="settings" type="button">
+            <svg class="icon nav-icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#settings"></use></svg><span>Einstellungen</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <div class="engine-card">
+            <div class="engine-card-head"><span class="status-dot" id="engineStatusDot" aria-hidden="true"></span><span id="engineStateLabel">Engine bereit</span></div>
+            <p>AMD AMF · lokale Aufnahme</p>
+            <span class="engine-build">AUCH IM HINTERGRUND AKTIV</span>
+          </div>
+          <div class="account-rail">
+            <span class="account-mark" aria-hidden="true"><svg class="icon"><use href="./assets/clipfarm-icons.svg#server"></use></svg></span>
+            <span><strong id="accountStatusLabel">Nicht angemeldet</strong><small id="accountStatusDetail">Sichere Konto-API</small></span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="page-heading">
+            <p class="eyebrow" id="pageEyebrow">Momente aus deinen Spielen</p>
+            <h1 id="pageTitle">Feed</h1>
+          </div>
+          <div class="topbar-actions">
+            <div class="server-indicator" id="serverIndicator" data-state="checking">
+              <span class="status-dot" id="backendStatusDot" aria-hidden="true"></span>
+              <span id="backendStatusSummary">Server wird geprüft</span>
+            </div>
+            <button class="primary-button top-save-button" id="saveClipButton" type="button">
+              <svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#cut"></use></svg>
+              <span>Clip sichern</span><kbd id="globalSaveKey">F8</kbd>
+            </button>
+          </div>
+        </header>
+
+        <section class="view feed-view is-visible" id="feedView" data-panel="feed">
+          <div class="feed-layout">
+            <div class="feed-main">
+              <section class="feed-intro" aria-labelledby="feedTitle">
+                <div>
+                  <p class="section-label">Community</p>
+                  <h2 id="feedTitle">Neueste Clips</h2>
+                  <p>Neue Spielmomente, zuerst die zuletzt hochgeladenen.</p>
+                </div>
+                <span class="sort-label">Chronologisch</span>
+              </section>
+
+              <section class="backend-notice" id="backendNotice" data-state="checking" aria-live="polite">
+                <span class="notice-icon"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#server"></use></svg></span>
+                <div class="notice-copy">
+                  <strong id="backendNoticeTitle">Verbindung wird geprüft</strong>
+                  <p id="backendNoticeText">Clipfarm prüft den Server über eine verschlüsselte Verbindung.</p>
+                </div>
+                <button class="quiet-button" id="retryBackendButton" type="button" aria-label="Serverstatus erneut prüfen">
+                  <svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#refresh"></use></svg><span>Erneut prüfen</span>
+                </button>
+              </section>
+
+              <section class="upload-queue" id="uploadQueuePanel" aria-labelledby="uploadQueueTitle" hidden>
+                <div class="upload-queue-heading"><div><p class="section-label">Deine Aufnahme</p><h3 id="uploadQueueTitle">Upload-Warteschlange</h3></div><span id="uploadQueueCount">0</span></div>
+                <div class="upload-queue-list" id="uploadQueueList"></div>
+              </section>
+
+              <section class="cloud-feed" aria-live="polite">
+                <div class="feed-loading" id="feedLoading" hidden><span class="loading-mark" aria-hidden="true"></span><p>Feed wird geladen …</p></div>
+                <div class="feed-empty" id="feedEmpty">
+                  <div class="empty-timeline" aria-hidden="true">
+                    <span></span><i></i><span></span><i></i><span></span><i></i><span></span>
+                  </div>
+                  <svg class="empty-symbol icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#feed"></use></svg>
+                  <h3 id="feedEmptyTitle">Dein Feed beginnt mit einem Clip</h3>
+                  <p id="feedEmptyText">Wenn die Community-API verfügbar ist, erscheinen hier echte Uploads von dir und anderen Spielern.</p>
+                  <button class="text-action" id="goToSessionButton" type="button">Zur aktiven Session</button>
+                </div>
+                <div class="feed-error" id="feedError" hidden role="alert"></div>
+                <div class="cloud-clip-list" id="cloudClipList"></div>
+                <div class="feed-more"><button class="quiet-button" id="loadMoreClipsButton" type="button" hidden>Ältere Clips laden</button></div>
+              </section>
+
+              <section class="local-recent" aria-labelledby="localRecentTitle">
+                <div class="section-heading-line">
+                  <div><p class="section-label">Lokal gespeichert</p><h2 id="localRecentTitle">Auf diesem PC</h2></div>
+                  <button class="quiet-button" id="openLibraryButton" type="button">Alle Clips</button>
+                </div>
+                <div class="clip-strip" id="recentClips"></div>
+                <p class="local-empty-note" id="localRecentEmpty">Hier erscheinen Clips, die du mit der Capture-Engine sicherst.</p>
+              </section>
+            </div>
+
+            <aside class="feed-rail">
+              <section class="rail-session">
+                <div class="rail-heading"><p class="section-label">Aktuelle Session</p><button class="plain-link" id="openSessionButton" type="button">Öffnen</button></div>
+                <div class="rail-game-mark" id="sessionLogo" aria-hidden="true"><img id="sessionGameIcon" alt="" hidden /><span id="sessionGameMonogram">—</span></div>
+                <h2 id="activeGameName">Kein Spiel erkannt</h2>
+                <div class="rail-session-state"><span class="status-dot" id="captureContextDot" aria-hidden="true"></span><span id="captureContextLabel">Capture bereit</span></div>
+                <p class="rail-detail" id="sessionDetail">Kein Spielprozess erkannt</p>
+                <div class="rail-capture-line"><span>Aufnahme</span><strong id="captureSignal">PUFFER PAUSIERT</strong></div>
+              </section>
+
+              <section class="rail-account">
+                <svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#account"></use></svg>
+                <div><h3 id="accountName">Nicht angemeldet</h3><p id="accountCaption">Anmeldung erforderlich</p></div>
+                <button class="plain-link account-logout" id="logoutButton" type="button">Abmelden</button>
+                <span class="api-state" id="cloudFeatureState">Wird geprüft</span>
+              </section>
+
+              <section class="rail-hotkeys">
+                <p class="section-label">Schnellzugriff</p>
+                <div><span>Clip sichern</span><kbd id="railSaveHotkey">F8</kbd></div>
+                <div><span>Replay starten / stoppen</span><kbd id="railToggleHotkey">F9</kbd></div>
+                <div><span>Mikrofon umschalten</span><kbd id="railMicHotkey">F10</kbd></div>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view session-view" id="sessionView" data-panel="session" hidden>
+          <div class="view-intro session-intro">
+            <div><p class="section-label">Capture-Workbench</p><h2>Dein Spiel. Dein Moment.</h2><p>Der Puffer läuft unabhängig davon, ob dieses Fenster geöffnet ist.</p></div>
+            <button class="quiet-button" id="openSettingsButton" type="button">Aufnahme einrichten <svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#settings"></use></svg></button>
+          </div>
+
+          <div class="session-layout">
+            <section class="recorder-panel" aria-labelledby="recorderTitle">
+              <div class="recorder-topline">
+                <div class="recorder-title"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#cut"></use></svg><div><p class="section-label">Clip-Marker</p><h3 id="recorderTitle">Replay-Puffer</h3></div></div>
+                <div class="recorder-state"><span class="status-dot" id="replayStatusDot" aria-hidden="true"></span><span id="replayStateLabel">AUS</span></div>
+              </div>
+              <div class="buffer-time-row"><strong id="replayTime">30 SEK</strong><span id="replayStateDetail">Puffer pausiert</span></div>
+              <div class="timeline-track" role="progressbar" aria-label="Replay-Puffer" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="replayProgress">
+                <div class="timeline-ticks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <span class="timeline-fill" id="replayRuleFill"></span>
+                <span class="timeline-head" aria-hidden="true"></span>
+              </div>
+              <div class="timeline-ends"><span>ältester Moment</span><span>jetzt</span></div>
+              <p class="recorder-copy" id="replayCopy">Der Replay-Puffer ist pausiert und verbraucht keine Capture-Ressourcen.</p>
+              <div class="recorder-actions">
+                <button class="secondary-button" id="toggleReplayButton" type="button">Puffer starten</button>
+                <button class="select-button" id="replayLengthButton" type="button">30 Sek. <span class="control-caret" aria-hidden="true"></span></button>
+              </div>
+              <div class="clip-hint"><span class="hint-bracket" aria-hidden="true"></span><p>Clip sichern mit <kbd id="sessionSaveHotkey">F8</kbd> oder der Schaltfläche oben.</p></div>
+            </section>
+
+            <section class="session-info" aria-labelledby="sessionInfoTitle">
+              <div class="session-game-header">
+                <div><p class="section-label">Erkanntes Spiel</p><h3 id="sessionInfoTitle">Session-Details</h3></div>
+                <span class="session-tag" id="captureMode">BEREIT</span>
+              </div>
+              <div class="session-target">
+                <div class="target-copy"><span>CAPTURE-ZIEL</span><strong id="sessionShort">Wartet auf Spiel</strong><small id="sessionWindowDetail">Kein Spielprozess erkannt</small></div>
+                <span class="capture-signal" id="sessionCaptureStatus">PUFFER PAUSIERT</span>
+              </div>
+
+              <div class="performance-section">
+                <div class="section-heading-line compact">
+                  <div><p class="section-label">Systemlast</p><h3>Leistung</h3></div>
+                  <button class="plain-link" id="metricsToggle" type="button">Ausblenden</button>
+                </div>
+                <div class="metric-grid" id="metricGrid">
+                  <div class="metric-item"><span>CPU</span><strong id="cpuValue">n/a</strong><small>Host / Capture</small></div>
+                  <div class="metric-item"><span>RAM</span><strong id="ramValue">n/a</strong><small>Engine-Prozesse</small></div>
+                  <div class="metric-item"><span>GPU</span><strong id="gpuValue">n/a</strong><small>Capture-Engine</small></div>
+                </div>
+                <p class="measurement-note" id="measurementNote">Lokale Messwerte werden geladen.</p>
+              </div>
+
+              <div class="capture-specs">
+                <div><span>Auflösung</span><strong id="captureResolution">—</strong></div>
+                <div><span>Framerate</span><strong id="captureFps">—</strong></div>
+                <div><span>Encoder</span><strong id="captureEncoder">—</strong></div>
+                <div><span>Aufnahmeweg</span><strong id="engineCapturePath">—</strong></div>
+              </div>
+            </section>
+          </div>
+
+          <section class="audio-strip" aria-label="Audioaufnahme">
+            <div class="audio-strip-title"><p class="section-label">Audio im Clip</p><span>Windows-Aufnahme</span></div>
+            <div class="audio-control"><svg class="icon audio-wave" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#waveform"></use></svg><span>Mikrofon</span><button class="switch is-on" id="micSwitch" type="button" aria-pressed="true" aria-label="Mikrofon umschalten"><span></span></button><kbd id="microphoneQuickHotkey">F10</kbd></div>
+            <div class="audio-control"><svg class="icon audio-wave" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#waveform"></use></svg><span>PC-Ton</span><button class="switch is-on" id="gameAudioSwitch" type="button" aria-pressed="true" aria-label="PC-Ton umschalten"><span></span></button><small class="audio-state" id="gameAudioStatus">Windows-Audio aktiv</small></div>
+          </section>
+        </section>
+
+        <section class="view library-view" id="libraryView" data-panel="library" hidden>
+          <div class="view-intro"><div><p class="section-label">Auf diesem PC</p><h2>Meine Clips</h2><p>Gesicherte Aufnahmen mit Wiedergabe, Suche und Dateiaktionen.</p></div></div>
+          <div class="library-toolbar">
+            <label class="search-field"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#clips"></use></svg><input id="clipSearch" type="search" placeholder="Clips durchsuchen" aria-label="Clips durchsuchen" /></label>
+            <div class="filter-group" aria-label="Zeitraum filtern"><button class="filter-button is-selected" data-filter="all" type="button">Alle</button><button class="filter-button" data-filter="today" type="button">Heute</button></div>
+          </div>
+          <div class="library-list" id="libraryList"></div>
+          <div class="empty-state" id="emptyLibrary" hidden><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#clips"></use></svg><h3>Noch keine lokalen Clips</h3><p>Sichere einen Moment während der Session. Er erscheint anschließend hier.</p><button class="text-action" id="emptySessionButton" type="button">Zur Session</button></div>
+        </section>
+
+        <section class="view settings-view" id="settingsView" data-panel="settings" hidden>
+          <div class="view-intro"><div><p class="section-label">Dein Setup</p><h2>Einstellungen</h2><p>Aufnahme, Audio, globale Tasten und Speicherort.</p></div><span class="settings-status"><span class="status-dot"></span> Lokal gespeichert</span></div>
+          <div class="settings-layout">
+            <nav class="settings-nav" aria-label="Einstellungsbereiche">
+              <button class="settings-tab is-active" data-settings-tab="recording" type="button">Aufnahme</button>
+              <button class="settings-tab" data-settings-tab="audio" type="button">Ton</button>
+              <button class="settings-tab" data-settings-tab="hotkeys" type="button">Tasten</button>
+              <button class="settings-tab" data-settings-tab="storage" type="button">Speicher</button>
+              <button class="settings-tab" data-settings-tab="performance" type="button">Leistung</button>
+            </nav>
+            <div class="settings-content">
+              <div class="settings-group is-active" data-settings-group="recording"><h3>Aufnahmequalität</h3><div class="settings-fields">
+                <label>Replay-Länge<select id="replayLengthSelect"><option value="15">15 Sekunden</option><option value="30" selected>30 Sekunden</option><option value="60">60 Sekunden</option><option value="120">120 Sekunden</option></select></label>
+                <label>Auflösung<select id="resolutionSelect"><option value="1920x1080" selected>1920 × 1080</option><option value="2560x1440">2560 × 1440</option><option value="3840x2160">3840 × 2160</option></select></label>
+                <label>Framerate<select id="fpsSelect"><option value="60" selected>60 FPS</option><option value="120">120 FPS</option></select></label>
+                <label>Bitrate<select id="bitrateSelect"><option value="18M">18 Mbps</option><option value="28M" selected>28 Mbps</option><option value="45M">45 Mbps</option></select></label>
+                <label>Encoder<select id="encoderSelect"><option value="hevc_amf" selected>AMD AMF HEVC</option><option value="h264_amf">AMD AMF AVC</option></select></label>
+                <label>Qualitätsprofil<select id="qualitySelect"><option value="performance">Leistung</option><option value="balanced" selected>Ausgewogen</option><option value="quality">Qualität</option></select></label>
+              </div></div>
+              <div class="settings-group" data-settings-group="audio"><h3>Tonaufnahme</h3><p class="settings-help">PC-Ton nimmt die Windows-Ausgabe auf, darunter Spiel und Sprachchat. Das Mikrofon nutzt standardmäßig dein Windows-Gerät. Ein zusätzlicher Treiber ist nicht nötig.</p>
+                <div class="settings-list">
+                  <div><span>Gesamter PC-Ton <small class="setting-status">Windows Loopback</small></span><button class="switch is-on" id="gameAudioSettingsSwitch" type="button" aria-pressed="true" aria-label="Gesamten PC-Ton aufnehmen"><span></span></button></div>
+                  <div><span>Mikrofon</span><button class="switch is-on" id="microphoneSettingSwitch" type="button" aria-pressed="true" aria-label="Mikrofon aufnehmen"><span></span></button></div>
+                  <div><span>Spuren trennen <small class="setting-status">PC-Ton und Mikrofon einzeln</small></span><button class="switch" id="separateTracksSwitch" type="button" aria-pressed="false" aria-label="Audiokanäle trennen"><span></span></button></div>
+                </div>
+                <div class="settings-fields settings-fields-spaced"><label>Mikrofon-Eingang<select id="microphoneDeviceSelect"><option value="">Gerät wird erkannt …</option></select></label><label>Mikrofonlautstärke<select id="microphoneVolumeSelect"><option value="25">25 %</option><option value="50">50 %</option><option value="75">75 %</option><option value="100" selected>100 %</option><option value="125">125 %</option></select></label></div>
+              </div>
+              <div class="settings-group" data-settings-group="hotkeys"><h3>Globale Tasten</h3><p class="settings-help">Hotkeys gelten auch dann, wenn das Clipfarm-Fenster geschlossen ist. Wähle „Ändern“ und drücke die neue Taste.</p>
+                <div class="hotkey-settings"><label>Clip sichern<button type="button" data-hotkey-name="save"><kbd id="saveHotkey">F8</kbd><span>Ändern</span></button></label><label>Replay umschalten<button type="button" data-hotkey-name="toggle"><kbd id="toggleHotkey">F9</kbd><span>Ändern</span></button></label><label>Mikrofon umschalten<button type="button" data-hotkey-name="microphone"><kbd id="microphoneHotkey">F10</kbd><span>Ändern</span></button></label></div>
+              </div>
+              <div class="settings-group" data-settings-group="storage"><h3>Speicherort</h3><div class="settings-fields"><label>Clip-Ordner<input id="clipDirectoryInput" value="" /></label><label>Temporärer Pufferordner<input id="bufferDirectoryInput" value="" /></label><label>Maximaler Speicher<select id="maxStorageSelect"><option value="10">10 GB</option><option value="50" selected>50 GB</option><option value="100">100 GB</option></select></label><label>Automatisch bereinigen<select id="cleanupPolicySelect"><option value="limit" selected>Wenn Limit erreicht</option><option value="never">Nie</option></select></label></div><p class="settings-help">Ordneränderungen gelten ab dem nächsten Engine-Neustart. Die Bereinigung folgt deiner Speichergrenze und betrifft nur MP4-Clips im Clip-Ordner.</p></div>
+              <div class="settings-group" data-settings-group="performance"><h3>Leistung und Aufnahmeweg</h3><div class="settings-list"><div><span>Hardware-Encoder verwenden</span><button class="switch is-on" type="button" aria-pressed="true" disabled><span></span></button></div><div><span>Windows Graphics Capture bevorzugen</span><button class="switch is-on" type="button" aria-pressed="true" disabled><span></span></button></div><div><span>Hintergrundpriorität reduzieren</span><button class="switch" id="backgroundPrioritySwitch" type="button" aria-pressed="false"><span></span></button></div></div><div class="settings-fields settings-fields-spaced"><label>Aufnahmemethode<select id="captureMethodSelect"><option value="auto" selected>Automatisch: Spiel zu Monitor</option><option value="display">Monitoraufnahme</option><option value="game">Spielfenster (erkannte Session)</option><option value="window">Fenster (erkannte Session)</option></select></label><label>GPU-Auswahl<select disabled><option selected>AMD AMF · System-GPU</option></select></label></div><p class="settings-help">Automatisch zielt bei erkannter Session auf das Spielfenster und fällt sonst auf den Monitor zurück. Für das Overlay im Spiel: Fenstermodus oder randloses Vollbild verwenden. Exklusives Vollbild blendet Desktop-Overlays aus.</p><button class="plain-link" id="testOverlayButton" type="button">Overlay testen</button></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="playback-dialog" id="playbackDialog" aria-labelledby="playbackTitle">
+      <div class="playback-dialog-header"><div><span id="playbackKind">LOKALER CLIP</span><h2 id="playbackTitle"></h2></div><form method="dialog"><button class="icon-button" type="submit" aria-label="Wiedergabe schließen">Schließen</button></form></div>
+      <video id="playbackVideo" controls playsinline preload="metadata"></video>
+    </dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <audio id="clipSuccessSound" src="./erfolgreich.mp3" preload="auto"></audio>
+    <audio id="clipFailureSound" src="./failed.mp3" preload="auto"></audio>
+    <script src="./app.js"></script>
+  </body>
+</html>

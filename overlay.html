@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none';" />
+    <link rel="stylesheet" href="./overlay.css" />
+    <title>Clip-Status</title>
+  </head>
+  <body>
+    <div class="notice" id="notice" role="status" aria-live="polite">
+      <div class="notice-mark" id="noticeMark" aria-hidden="true">✓</div>
+      <div class="notice-copy">
+        <strong id="noticeTitle">Clip gespeichert</strong>
+        <span id="noticeMessage">Der Clip liegt in deiner Bibliothek.</span>
+      </div>
+      <span class="notice-key" aria-hidden="true">CLIPFARM</span>
+      <div class="notice-timer" id="noticeTimer"></div>
+    </div>
+    <audio id="successSound" src="./erfolgreich.mp3" preload="auto"></audio>
+    <audio id="failureSound" src="./failed.mp3" preload="auto"></audio>
+    <script src="./overlay.js"></script>
+  </body>
+</html>

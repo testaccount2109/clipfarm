@@ -1,0 +1,25 @@
+{
+  "replayLength": 30,
+  "resolution": "1920x1080",
+  "fps": 60,
+  "bitrate": "28M",
+  "encoder": "hevc_amf",
+  "quality": "balanced",
+  "captureMethod": "auto",
+  "hotkeys": {
+    "save": "F8",
+    "toggle": "F9",
+    "microphone": "F10"
+  },
+  "microphoneDevice": null,
+  "microphoneVolume": 100,
+  "gameAudio": true,
+  "audioCaptureVersion": 1,
+  "separateTracks": false,
+  "clipDirectory": "C:\\Users\\benja\\Desktop\\projekte\\clipfarm\\clips",
+  "bufferDirectory": "C:\\Users\\benja\\AppData\\Local\\Temp\\clipfarm-buffer",
+  "maxStorageGb": 50,
+  "cleanupPolicy": "limit",
+  "backgroundPriority": false,
+  "capturePriorityVersion": 1
+}

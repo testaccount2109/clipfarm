@@ -1,0 +1,27 @@
+[Unit]
+Description=Clipfarm community API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clipfarm-api
+Group=clipfarm-api
+WorkingDirectory=/opt/clipfarm-api
+EnvironmentFile=/etc/clipfarm-api.env
+ExecStart=/opt/clipfarm-api/node /opt/clipfarm-api/server.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/clipfarm-api
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+  <symbol id="feed" viewBox="0 0 24 24">
+    <path d="M3 6h18M3 18h18"/>
+    <path d="M4 12h3l2-4 3 8 2-5 2 2h4"/>
+    <path d="M6 4v4M18 16v4"/>
+  </symbol>
+  <symbol id="session" viewBox="0 0 24 24">
+    <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>
+    <path d="M8 12h8M12 8v8"/>
+  </symbol>
+  <symbol id="clips" viewBox="0 0 24 24">
+    <path d="M4 5h16v14H4z"/>
+    <path d="M10 9v6l5-3-5-3z"/>
+    <path d="M2 8V3h5M17 21h5v-5"/>
+  </symbol>
+  <symbol id="settings" viewBox="0 0 24 24">
+    <path d="M4 7h9M17 7h3M4 17h3M11 17h9"/>
+    <circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>
+  </symbol>
+  <symbol id="cut" viewBox="0 0 24 24">
+    <path d="M4 5v4M4 15v4M20 5v4M20 15v4"/>
+    <path d="M4 12h16" stroke-dasharray="2.4 2.4"/>
+    <path d="m10 9 4 6m0-6-4 6"/>
+  </symbol>
+  <symbol id="upload" viewBox="0 0 24 24">
+    <path d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5"/>
+    <path d="M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/>
+  </symbol>
+  <symbol id="play" viewBox="0 0 24 24">
+    <path d="M8 5.5v13l11-6.5-11-6.5z"/>
+  </symbol>
+  <symbol id="refresh" viewBox="0 0 24 24">
+    <path d="M20 7v5h-5M4 17v-5h5"/>
+    <path d="M5.6 9a7 7 0 0 1 11.8-2L20 12M4 12l2.6 5a7 7 0 0 0 11.8-2"/>
+  </symbol>
+  <symbol id="server" viewBox="0 0 24 24">
+    <rect x="4" y="3" width="16" height="7" rx="1.5"/>
+    <rect x="4" y="14" width="16" height="7" rx="1.5"/>
+    <path d="M8 6.5h.01M8 17.5h.01M12 6.5h4M12 17.5h4"/>
+  </symbol>
+  <symbol id="waveform" viewBox="0 0 24 24">
+    <path d="M3 10v4M7 6v12M11 9v6M15 4v16M19 8v8M22 10v4"/>
+  </symbol>
+  <symbol id="account" viewBox="0 0 24 24">
+    <circle cx="12" cy="8" r="3.2"/>
+    <path d="M5 20v-1.4a7 7 0 0 1 14 0V20z"/>
+  </symbol>
+  <symbol id="frame" viewBox="0 0 24 24">
+    <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>
+    <path d="m10 9 5 3-5 3z"/>
+  </symbol>
+</svg>

@@ -1,0 +1,28 @@
+# Dependencies and generated build output
+**/node_modules/
+/release*/
+/desktop/Spool.App/bin/
+/desktop/Spool.App/obj/
+
+# Personal captures, logs, and temporary upload/session data
+/clips/
+/logs/
+*.log
+/pending-uploads/
+/pending-uploads.json
+/account-session.bin
+
+# Credentials, local environment files, and backend data
+**/.env
+**/.env.*
+!**/.env.example
+/backend/data/
+/backend/media/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local handoff notes and OS noise
+/CLIPFARM_HANDOFF.md
+Thumbs.db
+.DS_Store
