@@ -2,7 +2,7 @@
   "name": "clipfarm",
   "productName": "clipfarm",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Windows-Gaming-Clips mit lokaler Capture-Engine",
   "type": "commonjs",
   "main": "electron-main.js",
@@ -10,7 +10,7 @@
     "start": "node server.js",
     "desktop": "electron .",
     "build:updater": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-updater.ps1",
-    "build:win": "electron-builder --win nsis",
+    "build:win": "electron-builder --win nsis --publish never",
     "pack:win": "electron-builder --win dir"
   },
   "devDependencies": {
