@@ -253,10 +253,10 @@ async function saveClip() {
     if (payload.localOnly) {
       addClip(payload.clip);
       await syncDiskClips();
-      showToast('Clip nur auf diesem PC gespeichert.');
+      showToast(payload.message || 'Clip nur auf diesem PC gespeichert.');
     } else {
       await refreshUploadQueue();
-      showToast('Clip wird sicher zum Server hochgeladen.');
+      showToast(payload.message || 'Clip wird sicher zum Server hochgeladen.');
     }
   } catch (error) {
     playClipOutcome(false, { message: error.message });
@@ -697,6 +697,37 @@ async function pollEngine() {
   } catch { state.engineLive = false; }
 }
 
+function renderBackendStatus(status) {
+  const element = $('appInfoApiStatus');
+  if (!element) return;
+  if (!status) {
+    element.textContent = 'Status nicht verfügbar';
+    element.dataset.state = 'unavailable';
+    element.removeAttribute('title');
+    return;
+  }
+  if (!status.reachable) {
+    element.textContent = 'Nicht erreichbar';
+    element.dataset.state = 'unavailable';
+  } else if (status.basicAuthRequired) {
+    element.textContent = 'Durch Basic Auth gesperrt';
+    element.dataset.state = 'error';
+  } else if (!status.apiConfirmed) {
+    element.textContent = status.status ? `HTTP ${status.status}` : 'API nicht bestätigt';
+    element.dataset.state = 'error';
+  } else if (status.outdated) {
+    element.textContent = `v${status.serverVersion} · Update nötig`;
+    element.dataset.state = 'outdated';
+  } else if (status.available) {
+    element.textContent = `v${status.serverVersion} · aktuell`;
+    element.dataset.state = 'current';
+  } else {
+    element.textContent = `v${status.serverVersion || '—'} · nicht unterstützt`;
+    element.dataset.state = 'error';
+  }
+  element.title = status.message || '';
+}
+
 async function pollBackendStatus() {
   if (state.backendCheckInFlight) return;
   state.backendCheckInFlight = true;
@@ -704,6 +735,7 @@ async function pollBackendStatus() {
     if (!window.clipfarmNative?.getBackendStatus) throw new Error('Der Serverstatus ist nur in der sicheren Electron-Oberfläche verfügbar.');
     const status = await window.clipfarmNative.getBackendStatus();
     state.backendStatus = status;
+    renderBackendStatus(status);
     if (status.available && state.account && !state.feed.length) await loadCommunityFeed();
     if (state.account && !status.available && !state.feed.length) {
       state.feedError = status.message;
@@ -711,6 +743,7 @@ async function pollBackendStatus() {
     }
   } catch (error) {
     state.backendStatus = null;
+    renderBackendStatus({ reachable: false, message: error.message });
     if (state.account && !state.feed.length) {
       state.feedError = error.message;
       renderCommunityFeed();

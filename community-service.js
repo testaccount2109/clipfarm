@@ -31,6 +31,8 @@ class CommunityService extends EventEmitter {
     this.uploads = new Map();
     this.uploadWorker = null;
     this.retryTimer = null;
+    this.backendStatusCache = null;
+    this.backendStatusCachedAt = 0;
   }
 
   async initialize() {
@@ -158,11 +160,20 @@ class CommunityService extends EventEmitter {
     if (parsed.protocol !== "https:" || parsed.origin !== new URL(backendConfig.origin).origin) {
       throw new Error("Die Konto-API ist nicht auf dem festgelegten HTTPS-Server.");
     }
-    const response = await fetch(url, {
-      ...options,
-      redirect: "error",
-      signal: options.signal || AbortSignal.timeout(20_000)
-    });
+    await this.ensureEndpointCompatibility(route, options.method || "GET");
+    let response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        redirect: "error",
+        signal: options.signal || AbortSignal.timeout(20_000)
+      });
+    } catch (error) {
+      const timedOut = error.name === "TimeoutError" || error.name === "AbortError";
+      throw new CommunityApiError(0, timedOut
+        ? "Zeitüberschreitung beim Verbinden mit der Clipfarm-API."
+        : "Die Clipfarm-API ist nicht erreichbar. Prüfe deine Internetverbindung und den Serverstatus.");
+    }
     if (response.status === 401 && /\bBasic\b/i.test(response.headers.get("www-authenticate") || "")) {
       throw new CommunityApiError(401, "Der API-Endpunkt ist noch durch HTTP-Basic-Auth gesperrt.");
     }
@@ -173,9 +184,35 @@ class CommunityService extends EventEmitter {
       catch { throw new Error("Der Clipfarm-Server hat eine ungültige Antwort gesendet."); }
     }
     if (!response.ok) {
-      throw new CommunityApiError(response.status, this.cleanText(payload.error, 240) || "Der Clipfarm-Server konnte die Anfrage nicht abschließen.");
+      const fallback = this.cleanText(payload.error, 240) || "Der Clipfarm-Server konnte die Anfrage nicht abschließen.";
+      const message = response.status === 404
+        ? await this.describeEndpointFailure(route, options.method || "GET", fallback)
+        : fallback;
+      throw new CommunityApiError(response.status, message);
     }
     return payload;
+  }
+
+  async ensureEndpointCompatibility(route, method = "GET") {
+    const capability = backendConfig.capabilityForEndpoint(route, method);
+    if (!capability) return;
+    const status = await this.getBackendStatus();
+    if (status.available && status.missingCapabilities.includes(capability)) {
+      throw new CommunityApiError(404, backendConfig.unsupportedCapabilityMessage(capability, status));
+    }
+  }
+
+  async describeEndpointFailure(route, method, fallback) {
+    const capability = backendConfig.capabilityForEndpoint(route, method);
+    if (!capability) return fallback;
+    const status = await this.getBackendStatus({ force: true });
+    if (!status.reachable || !status.available) return fallback;
+    if (status.missingCapabilities.includes(capability)) {
+      return backendConfig.unsupportedCapabilityMessage(capability, status);
+    }
+    if (capability === "playback" || capability === "avatars") return fallback;
+    const version = status.serverVersion ? ` v${status.serverVersion}` : "";
+    return `Die Clipfarm-API${version} bestätigt diese Funktion, liefert für den Endpunkt aber HTTP 404. Der Backend-Stand ist wahrscheinlich unvollständig.`;
   }
 
   async refreshSession() {
@@ -300,7 +337,10 @@ class CommunityService extends EventEmitter {
     return this.restoreSession();
   }
 
-  async getBackendStatus() {
+  async getBackendStatus({ force = false } = {}) {
+    if (!force && this.backendStatusCache && Date.now() - this.backendStatusCachedAt < 30_000) {
+      return this.backendStatusCache;
+    }
     const checkedAt = new Date().toISOString();
     try {
       const payload = await this.rawRequest(backendConfig.healthPath, {
@@ -308,33 +348,45 @@ class CommunityService extends EventEmitter {
         headers: { Accept: "application/json" },
         signal: AbortSignal.timeout(7000)
       });
-      const available = payload.ok === true && payload.service === "clipfarm-community-api";
-      return {
+      const inspection = backendConfig.inspectHealth(payload);
+      const result = {
         origin: backendConfig.origin,
         checkedAt,
         reachable: true,
         secure: true,
         status: 200,
         basicAuthRequired: false,
-        available,
-        message: available ? "Clipfarm-API ist über HTTPS erreichbar." : "Der Server antwortet, aber die Clipfarm-API wurde nicht bestätigt."
+        ...inspection
       };
+      this.backendStatusCache = result;
+      this.backendStatusCachedAt = Date.now();
+      return result;
     } catch (error) {
       const basicAuthRequired = error.status === 401;
-      return {
+      const result = {
         origin: backendConfig.origin,
         checkedAt,
         reachable: Boolean(error.status),
         secure: true,
         status: error.status || null,
         basicAuthRequired,
+        apiConfirmed: false,
+        serverVersion: null,
+        capabilities: [],
+        missingCapabilities: [...backendConfig.requiredCapabilities],
         available: false,
+        compatible: false,
+        outdated: false,
+        minimumApiVersion: backendConfig.minimumApiVersion,
         message: basicAuthRequired
           ? "Die API-Route ist noch durch HTTP-Basic-Auth gesperrt."
           : error.status
             ? "Der Clipfarm-Server antwortet mit HTTP " + error.status + "."
-            : "Der Clipfarm-Server ist derzeit nicht erreichbar."
+            : error.message || "Der Clipfarm-Server ist derzeit nicht erreichbar."
       };
+      this.backendStatusCache = result;
+      this.backendStatusCachedAt = Date.now();
+      return result;
     }
   }
 
@@ -629,6 +681,7 @@ class CommunityService extends EventEmitter {
 
   async upload(item) {
     let token = await this.ensureAccessToken();
+    await this.ensureEndpointCompatibility("/clips", "POST");
     for (let attempt = 0; attempt < 2; attempt += 1) {
       item.status = "uploading";
       item.progress = 0;
@@ -670,7 +723,10 @@ class CommunityService extends EventEmitter {
       } catch (error) {
         source.destroy();
         meter.destroy();
-        throw error;
+        const timedOut = error.name === "TimeoutError" || error.name === "AbortError";
+        throw new CommunityApiError(0, timedOut
+          ? "Zeitüberschreitung beim Clip-Upload. Der Upload wird später automatisch erneut versucht."
+          : "Die Clipfarm-API hat die Upload-Verbindung unterbrochen. Der Clip bleibt in der Warteschlange.");
       }
       const body = await response.text();
       let payload = {};
@@ -683,7 +739,11 @@ class CommunityService extends EventEmitter {
         continue;
       }
       if (!response.ok) {
-        throw new CommunityApiError(response.status, this.cleanText(payload.error, 240) || "Der Upload ist mit HTTP " + response.status + " fehlgeschlagen.");
+        const fallback = this.cleanText(payload.error, 240) || "Der Upload ist mit HTTP " + response.status + " fehlgeschlagen.";
+        const message = response.status === 404
+          ? await this.describeEndpointFailure("/clips", "POST", fallback)
+          : fallback;
+        throw new CommunityApiError(response.status, message);
       }
       item.progress = 100;
       this.emitUploads("progress", item);

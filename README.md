@@ -51,7 +51,7 @@ The Electron desktop app binds its HTTP host to an ephemeral loopback port and l
 
 ## Requirements and limits
 
-Capture requires a Windows FFmpeg build that includes `gfxcapture`, `hevc_amf` or `h264_amf`, and the matching FFprobe, plus a working AMD AMF driver. clipfarm can find FFmpeg in PATH, a project `tools/ffmpeg.exe`, or a WinGet FFmpeg package. The installer includes clipfarm's small WASAPI bridge; it does not need a virtual cable or an extra driver. The installer does not bundle FFmpeg.
+When the replay buffer starts, clipfarm checks for FFmpeg with `gfxcapture`, FFprobe, AAC, MP4, and the CPU encoder. If no compatible build is installed, clipfarm downloads the official [Gyan FFmpeg Essentials build](https://www.gyan.dev/ffmpeg/builds/) and checks its published SHA-256 checksum before installing it in the user's application-data folder. An AMD AMF encoder is used when its driver works; otherwise clipfarm falls back to CPU encoding so clips can still be created on PCs without AMD graphics. The installer includes clipfarm's small WASAPI bridge; it does not need a virtual cable or an extra audio driver. The first automatic FFmpeg setup needs an internet connection.
 
 The replay ring stays on disk as short segments instead of retaining the video in RAM. FFmpeg input queues and the audio filter graph are kept deliberately small. RAM/CPU metrics include the Electron main host, FFmpeg, and the WASAPI helper, but not Chromium's UI renderer. GPU metrics may show `n/a` when Windows does not expose a GPU Engine counter for the capture process. Game detection uses process names and recognizes Minecraft Java only when its window title identifies Minecraft; a game must be running for a live detection check.
 
@@ -59,7 +59,7 @@ The social feed and local capture are separate: only server-provided clips belon
 
 ## Community backend
 
-The product API uses the HTTPS origin centralized in `backend-config.js` and checks `GET /api/v1/health`. The existing website root `https://benni-projects.de/` may continue to request HTTP-Basic-Auth; Clipfarm does not send account credentials to that page. Nginx publishes only `/api/v1/` to the separate API service and disables Basic Auth on that route. HTTP redirects to HTTPS, and the existing certificate covers `benni-projects.de` and `www.benni-projects.de`.
+The product API uses the HTTPS origin centralized in `backend-config.js` and checks `GET /api/v1/health`, which reports the API version and supported capabilities. Clipfarm distinguishes an unreachable server from a reachable but outdated API and checks feature support before calling newer routes. The existing website root `https://benni-projects.de/` may continue to request HTTP-Basic-Auth; Clipfarm does not send account credentials to that page. Nginx publishes only `/api/v1/` to the separate API service and disables Basic Auth on that route. HTTP redirects to HTTPS, and the existing certificate covers `benni-projects.de` and `www.benni-projects.de`.
 
 `backend/server.js` provides account registration and sign-in, encrypted-at-rest password hashes, rotating refresh sessions, user profiles and clip-sharing settings, a newest-first community feed, MP4 uploads, and byte-range video playback. The feed contains only server records. Likes, comments, view counts, and generated thumbnails are not claimed by this version. Media is served through signed playback URLs, and feed visibility follows each profile's sharing setting.
 
@@ -71,7 +71,7 @@ The service contract is `backend/openapi.json`, served at `GET /api/v1/openapi.j
 
 - `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `GET /api/v1/auth/session`, `POST /api/v1/auth/refresh`, and `POST /api/v1/auth/logout`.
 - `GET` and `POST /api/v1/profile` for profile and privacy settings, plus `POST /api/v1/profile/password` and `GET` or `HEAD /api/v1/users/{id}/avatar`.
-- `GET /api/v1/clips?sort=uploadedAt&order=desc&cursor=…` for real community clips.
+- `GET /api/v1/clips?sort=uploadedAt&order=desc&cursor=…` for the community feed; `scope=mine` returns only the signed-in user's clips.
 - `POST /api/v1/clips` for an authenticated MP4 upload, with a required `Idempotency-Key`.
 - `GET` or `HEAD /api/v1/clips/{id}/media` for byte-range playback.
 

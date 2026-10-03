@@ -526,7 +526,7 @@ async function getBackendStatus() {
     const basicAuthRequired = response.status === 401 && /\bBasic\b/i.test(response.headers.get("www-authenticate") || "");
     let payload = {};
     try { payload = await response.json(); } catch { /* Unrecognized API responses are reported below. */ }
-    const available = response.ok && payload.ok === true && payload.service === "clipfarm-community-api";
+    const inspection = backendConfig.inspectHealth(response.ok ? payload : null);
     return {
       origin: backendConfig.origin,
       checkedAt,
@@ -534,13 +534,11 @@ async function getBackendStatus() {
       secure: true,
       status: response.status,
       basicAuthRequired,
-      available,
+      ...inspection,
       message: basicAuthRequired
         ? "Der API-Endpunkt verlangt HTTP-Basic-Auth. Zugangsdaten werden nicht gesendet."
-        : available
-          ? "Clipfarm-API ist über HTTPS erreichbar."
-          : response.ok
-            ? "Der Server antwortet, aber die Clipfarm-API wurde nicht bestätigt."
+        : response.ok
+          ? inspection.message
           : `Der Server antwortet mit HTTP ${response.status}.`
     };
   } catch (error) {
@@ -551,10 +549,17 @@ async function getBackendStatus() {
       secure: true,
       status: null,
       basicAuthRequired: false,
+      apiConfirmed: false,
+      serverVersion: null,
+      capabilities: [],
+      missingCapabilities: [...backendConfig.requiredCapabilities],
       available: false,
+      compatible: false,
+      outdated: false,
+      minimumApiVersion: backendConfig.minimumApiVersion,
       message: error.name === "TimeoutError"
-        ? "Zeitüberschreitung beim Verbinden mit dem Clipfarm-Server."
-        : "Der Clipfarm-Server ist derzeit nicht erreichbar."
+        ? "Zeitüberschreitung beim Verbinden mit der Clipfarm-API."
+        : "Die Clipfarm-API ist nicht erreichbar. Prüfe deine Internetverbindung und den Serverstatus."
     };
   }
 }
@@ -573,32 +578,41 @@ async function saveReplay() {
   clipSaveInFlight = true;
   showClipOutcomeOverlay({ outcome: "saving", message: "2 Sekunden Nachlauf – Clip wird gesichert." });
   try {
-    if (!community) throw new Error("Clipfarm wird noch gestartet.");
-    const account = await community.getAccount();
-    if (!account.user) throw new Error("Melde dich in Clipfarm an, bevor du einen Clip sicherst.");
+    const [settings, session] = await Promise.all([api("/api/config"), api("/api/session")]);
+    const result = await api("/api/clip/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seconds: settings.config.replayLength, game: session.game || "Game" })
+    });
+
+    const keepLocal = (message) => {
+      const fullMessage = message + " · " + path.basename(result.clip.file);
+      reportClipOutcome("success", fullMessage);
+      return { ...result, localOnly: true, message };
+    };
+
+    if (!community) return keepLocal("Clip lokal gesichert. Die Upload-Warteschlange wird noch gestartet.");
+    let account;
+    try { account = await community.getAccount(); }
+    catch { return keepLocal("Clip lokal gesichert. Die Konto-API ist nicht erreichbar; es wurde kein Upload gestartet."); }
+    if (!account?.user) return keepLocal("Clip lokal gesichert. Melde dich an, wenn du ihn hochladen möchtest.");
+
     let profile;
     try {
       profile = await community.getProfile();
     } catch (error) {
-      // Older deployed APIs do not expose /profile yet. Preserve their legacy
-      // behavior (uploaded clips are shared) instead of blocking local capture.
-      if (error.status !== 404) throw error;
-      profile = { localOnly: false };
+      // Version 1.0 APIs lack profile routes; their default behavior shares uploads.
+      if (error.status === 404) profile = { localOnly: false };
+      else return keepLocal("Clip lokal gesichert. API-Profilstatus nicht verfügbar; Upload ausgesetzt.");
     }
-    const [settings, session] = await Promise.all([api("/api/config"), api("/api/session")]);
-    const uploadId = profile.localOnly ? null : crypto.randomUUID();
-    const result = await api("/api/clip/save", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seconds: settings.config.replayLength, game: session.game || "Game", uploadId })
-    });
-    if (profile.localOnly) {
-      reportClipOutcome("success", "Nur lokal gespeichert · " + path.basename(result.clip.file));
-      return { ...result, localOnly: true };
-    }
-    const queued = await community.queueClip(result.clip, true);
-    reportClipOutcome("success", "Upload gestartet · " + (result.clip.name || "Clip"));
-    return { ...result, localOnly: false, upload: queued };
+
+    if (profile.localOnly) return keepLocal("Clip nur auf diesem PC gespeichert.");
+    let queued;
+    try { queued = await community.queueClip(result.clip, true); }
+    catch { return keepLocal("Clip lokal gesichert. Er konnte nicht in die Upload-Warteschlange übernommen werden."); }
+    const message = "Clip lokal gesichert · Upload vorgemerkt";
+    reportClipOutcome("success", message + " · " + (result.clip.name || "Clip"));
+    return { ...result, localOnly: false, upload: queued, message };
   } catch (error) {
     reportClipOutcome("failed", error.message);
     throw error;

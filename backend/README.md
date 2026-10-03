@@ -9,7 +9,9 @@ https://benni-projects.de/api/v1/.
 ## API
 
 The public contract is openapi.json, also served at GET /api/v1/openapi.json.
-GET /api/v1/health is the unauthenticated service check. Registration and login
+GET /api/v1/health is the unauthenticated service check and reports the API
+version and supported capabilities so clients can identify outdated deployments.
+Registration and login
 take a username and password over HTTPS. Passwords are stored as per-user salted
 scrypt hashes. Short-lived access tokens and rotating refresh tokens are kept
 in Electron's OS-backed safeStorage; the renderer never receives either token.

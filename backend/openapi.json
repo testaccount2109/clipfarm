@@ -20,7 +20,7 @@
         "responses": {
           "200": {
             "description": "Service is ready.",
-            "content": { "application/json": { "schema": { "type": "object", "required": ["ok", "service", "version"], "properties": { "ok": { "type": "boolean", "const": true }, "service": { "type": "string", "const": "clipfarm-community-api" }, "version": { "type": "string" } } } } }
+            "content": { "application/json": { "schema": { "type": "object", "required": ["ok", "service", "version", "capabilities"], "properties": { "ok": { "type": "boolean", "const": true }, "service": { "type": "string", "const": "clipfarm-community-api" }, "version": { "type": "string" }, "capabilities": { "type": "array", "items": { "type": "string", "enum": ["auth", "clips", "uploads", "playback", "profiles", "profileWrite", "privateClips", "passwordChange", "avatars"] } } } } } }
           }
         }
       }
@@ -156,6 +156,7 @@
         "parameters": [
           { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["uploadedAt"] } },
           { "name": "order", "in": "query", "schema": { "type": "string", "enum": ["desc"] } },
+          { "name": "scope", "in": "query", "schema": { "type": "string", "enum": ["mine"] }, "description": "Return only clips uploaded by the authenticated user." },
           { "name": "cursor", "in": "query", "schema": { "type": "string" } }
         ],
         "responses": {
@@ -189,7 +190,7 @@
       "get": {
         "tags": ["Clips"],
         "summary": "Stream a stored community clip",
-        "description": "Public media URL with byte-range support for native HTML video playback. Clip IDs are random UUIDs.",
+        "description": "Short-lived signed media URL with byte-range support. Private clips are playable only by their owner.",
         "security": [],
         "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
         "responses": {

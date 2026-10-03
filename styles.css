@@ -626,7 +626,9 @@ kbd { display: inline-flex; min-width: 28px; min-height: 21px; align-items: cent
 .app-info-details dt { color: var(--muted); font-size: 9px; }
 .app-info-details dd { overflow: hidden; margin: 0; color: var(--subtle); font-family: var(--font-data); font-size: 10px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .app-info-update-row dd[data-state="current"] { color: var(--lime); }
-.app-info-update-row dd[data-state="unavailable"], .app-info-update-row dd[data-state="updater-error"] { color: var(--danger); }
+.app-info-update-row dd[data-state="unavailable"], .app-info-update-row dd[data-state="updater-error"], .app-info-api-row dd[data-state="unavailable"], .app-info-api-row dd[data-state="error"] { color: var(--danger); }
+.app-info-api-row dd[data-state="outdated"] { color: var(--warning); }
+.app-info-api-row dd[data-state="current"] { color: var(--lime); }
 .app-info-actions { display: flex; align-items: center; gap: 13px; margin-top: 16px; }
 .app-info-actions .secondary-button { min-height: 38px; gap: 8px; font-size: 10px; }
 .app-info-actions .icon { width: 14px; height: 14px; }
