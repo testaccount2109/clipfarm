@@ -30,7 +30,6 @@ let clipOverlayHideTimer = null;
 let clipOverlayReady = false;
 let sessionStorePath = null;
 let pendingUploadDirectory = null;
-let uploadManifestPath = null;
 let accountUser = null;
 let accessToken = null;
 let accessTokenExpiresAt = 0;
@@ -364,7 +363,6 @@ function prepareUserData() {
   process.env.SPOOL_DATA_DIR = dataDirectory;
   process.env.CLIPFARM_PORT = "0";
   pendingUploadDirectory = path.join(dataDirectory, "pending-uploads");
-  uploadManifestPath = path.join(dataDirectory, "pending-uploads.json");
   sessionStorePath = path.join(dataDirectory, "account-session.bin");
   fs.mkdirSync(pendingUploadDirectory, { recursive: true });
   process.env.CLIPFARM_STAGING_DIR = pendingUploadDirectory;
@@ -393,9 +391,7 @@ async function clearLegacyOfflineClipsOnce() {
     } catch { /* A clip removed by another cleanup can be ignored. */ }
   }
   await fs.promises.rm(path.join(clipDirectory, ".thumbs"), { recursive: true, force: true });
-  await fs.promises.rm(pendingUploadDirectory, { recursive: true, force: true });
-  await fs.promises.mkdir(pendingUploadDirectory, { recursive: true });
-  await fs.promises.rm(uploadManifestPath, { force: true });
+  // Keep queued cloud uploads so CommunityService can finish syncing them.
   await fs.promises.writeFile(markerPath, new Date().toISOString(), { flag: "wx" });
 }
 
