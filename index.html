@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#111411" />
     <meta name="description" content="clipfarm — Gaming-Momente aufnehmen und teilen." />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' https://benni-projects.de; connect-src 'self';" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://benni-projects.de; media-src 'self' https://benni-projects.de; connect-src 'self';" />
     <title>clipfarm</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -23,9 +23,7 @@
           <div class="auth-timeline" aria-hidden="true">
             <span class="auth-mark"></span><i></i><i></i><i></i><span class="auth-playhead"></span><i></i><i></i><span class="auth-mark"></span>
           </div>
-          <div class="auth-secure-state" id="accountGateStatus" aria-live="polite">
-            <span class="status-dot" id="accountGateDot"></span><span>Serververbindung wird geprüft …</span>
-          </div>
+          <p class="auth-secure-state">Mit deinem Clipfarm-Konto kannst du deine Clips von überall ansehen.</p>
         </section>
         <section class="auth-panel" aria-labelledby="authFormTitle">
           <div class="auth-heading"><p class="section-label">Clipfarm-Konto</p><h2 id="authFormTitle">Willkommen zurück</h2></div>
@@ -79,10 +77,6 @@
             <p>AMD AMF · lokale Aufnahme</p>
             <span class="engine-build">AUCH IM HINTERGRUND AKTIV</span>
           </div>
-          <div class="account-rail">
-            <span class="account-mark" aria-hidden="true"><svg class="icon"><use href="./assets/clipfarm-icons.svg#server"></use></svg></span>
-            <span><strong id="accountStatusLabel">Nicht angemeldet</strong><small id="accountStatusDetail">Sichere Konto-API</small></span>
-          </div>
         </div>
       </aside>
 
@@ -93,10 +87,6 @@
             <h1 id="pageTitle">Feed</h1>
           </div>
           <div class="topbar-actions">
-            <div class="server-indicator" id="serverIndicator" data-state="checking">
-              <span class="status-dot" id="backendStatusDot" aria-hidden="true"></span>
-              <span id="backendStatusSummary">Server wird geprüft</span>
-            </div>
             <button class="primary-button top-save-button" id="saveClipButton" type="button">
               <svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#cut"></use></svg>
               <span>Clip sichern</span><kbd id="globalSaveKey">F8</kbd>
@@ -108,22 +98,13 @@
           <div class="feed-layout">
             <div class="feed-main">
               <section class="feed-intro" aria-labelledby="feedTitle">
-                <div>
-                  <p class="section-label">Community</p>
-                  <h2 id="feedTitle">Neueste Clips</h2>
-                  <p>Neue Spielmomente, zuerst die zuletzt hochgeladenen.</p>
+                <div class="feed-heading-copy">
+                  <p class="section-label">DIE CLIPFARM COMMUNITY</p>
+                  <h2 id="feedTitle">Spielmomente, geteilt von Spielern.</h2>
+                  <p>Sieh dir an, was andere gerade spielen. Jeder Clip zeigt direkt, wer ihn aufgenommen hat.</p>
                 </div>
-                <span class="sort-label">Chronologisch</span>
-              </section>
-
-              <section class="backend-notice" id="backendNotice" data-state="checking" aria-live="polite">
-                <span class="notice-icon"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#server"></use></svg></span>
-                <div class="notice-copy">
-                  <strong id="backendNoticeTitle">Verbindung wird geprüft</strong>
-                  <p id="backendNoticeText">Clipfarm prüft den Server über eine verschlüsselte Verbindung.</p>
-                </div>
-                <button class="quiet-button" id="retryBackendButton" type="button" aria-label="Serverstatus erneut prüfen">
-                  <svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#refresh"></use></svg><span>Erneut prüfen</span>
+                <button class="quiet-button feed-refresh" id="refreshFeedButton" type="button" aria-label="Feed aktualisieren">
+                  <svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#refresh"></use></svg><span>Aktualisieren</span>
                 </button>
               </section>
 
@@ -140,7 +121,7 @@
                   </div>
                   <svg class="empty-symbol icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#feed"></use></svg>
                   <h3 id="feedEmptyTitle">Dein Feed beginnt mit einem Clip</h3>
-                  <p id="feedEmptyText">Wenn die Community-API verfügbar ist, erscheinen hier echte Uploads von dir und anderen Spielern.</p>
+                  <p id="feedEmptyText">Melde dich an, um Spielmomente von anderen Spielern zu sehen. Neue Clips erscheinen hier, sobald sie hochgeladen sind.</p>
                   <button class="text-action" id="goToSessionButton" type="button">Zur aktiven Session</button>
                 </div>
                 <div class="feed-error" id="feedError" hidden role="alert"></div>
@@ -148,14 +129,6 @@
                 <div class="feed-more"><button class="quiet-button" id="loadMoreClipsButton" type="button" hidden>Ältere Clips laden</button></div>
               </section>
 
-              <section class="local-recent" aria-labelledby="localRecentTitle">
-                <div class="section-heading-line">
-                  <div><p class="section-label">Lokal gespeichert</p><h2 id="localRecentTitle">Auf diesem PC</h2></div>
-                  <button class="quiet-button" id="openLibraryButton" type="button">Alle Clips</button>
-                </div>
-                <div class="clip-strip" id="recentClips"></div>
-                <p class="local-empty-note" id="localRecentEmpty">Hier erscheinen Clips, die du mit der Capture-Engine sicherst.</p>
-              </section>
             </div>
 
             <aside class="feed-rail">
@@ -166,13 +139,6 @@
                 <div class="rail-session-state"><span class="status-dot" id="captureContextDot" aria-hidden="true"></span><span id="captureContextLabel">Capture bereit</span></div>
                 <p class="rail-detail" id="sessionDetail">Kein Spielprozess erkannt</p>
                 <div class="rail-capture-line"><span>Aufnahme</span><strong id="captureSignal">PUFFER PAUSIERT</strong></div>
-              </section>
-
-              <section class="rail-account">
-                <svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#account"></use></svg>
-                <div><h3 id="accountName">Nicht angemeldet</h3><p id="accountCaption">Anmeldung erforderlich</p></div>
-                <button class="plain-link account-logout" id="logoutButton" type="button">Abmelden</button>
-                <span class="api-state" id="cloudFeatureState">Wird geprüft</span>
               </section>
 
               <section class="rail-hotkeys">
@@ -253,7 +219,7 @@
 
         <section class="view library-view" id="libraryView" data-panel="library" hidden>
           <header class="library-header view-intro">
-            <div><p class="section-label">Lokale Aufnahmen</p><h2>Deine Clips</h2><p>Gespeicherte Spielmomente ansehen und verwalten.</p></div>
+            <div><p class="section-label">DEINE MOMENTE</p><h2>Meine Clips</h2><p>Online-Clips werden erst beim Abspielen vom Server geladen. Im Nur-lokal-Modus gespeicherte Clips bleiben auf diesem PC.</p></div>
             <div class="library-total" aria-label="Anzahl gespeicherter Clips"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#clips"></use></svg><strong id="libraryTotalCount">0</strong><span>Clips</span></div>
           </header>
           <div class="library-toolbar">
@@ -261,7 +227,30 @@
             <div class="library-toolbar-end"><span id="libraryResultCount" class="library-result-count" aria-live="polite">0 Clips</span><div class="filter-group" aria-label="Zeitraum filtern"><button class="filter-button is-selected" data-filter="all" aria-pressed="true" type="button">Alle</button><button class="filter-button" data-filter="today" aria-pressed="false" type="button">Heute</button></div></div>
           </div>
           <div class="library-grid" id="libraryList"></div>
-          <div class="empty-state library-empty" id="emptyLibrary" hidden><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#frame"></use></svg><h3>Noch keine Clips gespeichert</h3><p>Sichere einen Moment mit F8. Deine Aufnahmen erscheinen hier automatisch.</p><button class="text-action" id="emptySessionButton" type="button">Zur Aufnahme</button></div>
+          <div class="empty-state library-empty" id="emptyLibrary" hidden><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#frame"></use></svg><h3>Noch keine Clips gespeichert</h3><p>Sichere einen Moment mit F8. Deine Videos erscheinen hier, sobald sie hochgeladen sind.</p><button class="text-action" id="emptySessionButton" type="button">Zur Aufnahme</button></div>
+        </section>
+
+        <section class="view profile-view" id="profileView" data-panel="profile" hidden>
+          <div class="view-intro"><div><p class="section-label">DEIN KONTO</p><h2>Mein Profil</h2><p>So sehen andere Spieler deinen Namen und deine Clips.</p></div><button class="quiet-button" id="logoutButton" type="button">Abmelden</button></div>
+          <div class="profile-layout">
+            <form class="profile-card" id="profileForm">
+              <div class="profile-card-heading"><div><p class="section-label">SPIELERKARTE</p><h3>Profil bearbeiten</h3></div><span class="profile-handle" id="profileUsername">@username</span></div>
+              <div class="profile-avatar-row">
+                <label class="profile-avatar-picker" for="profileAvatarInput" aria-label="Profilbild ändern"><img id="profileAvatarPreview" alt="" hidden /><span id="profileAvatarFallback">C</span><span class="avatar-edit-mark">＋</span></label>
+                <div><strong>Profilbild</strong><p>PNG, JPG oder WebP · bis zu 1,5 MB</p><input id="profileAvatarInput" type="file" accept="image/png,image/jpeg,image/webp" hidden /><button class="plain-link" id="clearProfileAvatarButton" type="button">Bild entfernen</button></div>
+              </div>
+              <label class="profile-field">Anzeigename<input id="profileDisplayName" type="text" minlength="1" maxlength="32" required /></label>
+              <label class="profile-field">Beschreibung<textarea id="profileBio" rows="4" maxlength="280" placeholder="Welche Spiele oder Momente zeigst du?"></textarea><small><span id="profileBioCount">0</span> / 280</small></label>
+              <div class="profile-form-footer"><p class="profile-feedback" id="profileSaveStatus" aria-live="polite"></p><button class="primary-button" id="saveProfileButton" type="submit">Profil speichern</button></div>
+            </form>
+            <form class="profile-card password-card" id="passwordForm">
+              <div class="profile-card-heading"><div><p class="section-label">ZUGANG</p><h3>Passwort ändern</h3></div></div>
+              <label class="profile-field">Aktuelles Passwort<input id="currentPasswordInput" type="password" autocomplete="current-password" required /></label>
+              <label class="profile-field">Neues Passwort<input id="newPasswordInput" type="password" minlength="10" maxlength="128" autocomplete="new-password" required /><small>Mindestens 10 Zeichen.</small></label>
+              <label class="profile-field">Neues Passwort wiederholen<input id="confirmPasswordInput" type="password" minlength="10" maxlength="128" autocomplete="new-password" required /></label>
+              <div class="profile-form-footer"><p class="profile-feedback" id="passwordSaveStatus" aria-live="polite"></p><button class="secondary-button" id="savePasswordButton" type="submit">Passwort speichern</button></div>
+            </form>
+          </div>
         </section>
 
         <section class="view settings-view" id="settingsView" data-panel="settings" hidden>
@@ -272,6 +261,7 @@
               <button class="settings-tab" id="settingsTabAudio" role="tab" aria-selected="false" aria-controls="settingsPanelAudio" data-settings-tab="audio" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#waveform"></use></svg><span>Ton</span></button>
               <button class="settings-tab" id="settingsTabHotkeys" role="tab" aria-selected="false" aria-controls="settingsPanelHotkeys" data-settings-tab="hotkeys" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#session"></use></svg><span>Tasten</span></button>
               <button class="settings-tab" id="settingsTabStorage" role="tab" aria-selected="false" aria-controls="settingsPanelStorage" data-settings-tab="storage" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#clips"></use></svg><span>Speicher</span></button>
+              <button class="settings-tab" id="settingsTabPrivacy" role="tab" aria-selected="false" aria-controls="settingsPanelPrivacy" data-settings-tab="privacy" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#account"></use></svg><span>Datenschutz</span></button>
               <button class="settings-tab" id="settingsTabPerformance" role="tab" aria-selected="false" aria-controls="settingsPanelPerformance" data-settings-tab="performance" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#server"></use></svg><span>Leistung</span></button>
               <button class="settings-tab" id="settingsTabInfo" role="tab" aria-selected="false" aria-controls="settingsPanelInfo" data-settings-tab="info" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#info"></use></svg><span>Info</span></button>
             </nav>
@@ -296,6 +286,7 @@
                 <div class="hotkey-settings"><label>Clip sichern<button type="button" data-hotkey-name="save"><kbd id="saveHotkey">F8</kbd><span>Ändern</span></button></label><label>Replay umschalten<button type="button" data-hotkey-name="toggle"><kbd id="toggleHotkey">F9</kbd><span>Ändern</span></button></label><label>Mikrofon umschalten<button type="button" data-hotkey-name="microphone"><kbd id="microphoneHotkey">F10</kbd><span>Ändern</span></button></label></div>
               </div>
               <div class="settings-group" id="settingsPanelStorage" role="tabpanel" aria-labelledby="settingsTabStorage" tabindex="0" data-settings-group="storage"><h3>Speicherort</h3><div class="settings-fields"><label>Clip-Ordner<input id="clipDirectoryInput" value="" /></label><label>Temporärer Pufferordner<input id="bufferDirectoryInput" value="" /></label><label>Maximaler Speicher<select id="maxStorageSelect"><option value="10">10 GB</option><option value="50" selected>50 GB</option><option value="100">100 GB</option></select></label><label>Automatisch bereinigen<select id="cleanupPolicySelect"><option value="limit" selected>Wenn Limit erreicht</option><option value="never">Nie</option></select></label></div><p class="settings-help">Ordneränderungen gelten ab dem nächsten Engine-Neustart. Die Bereinigung folgt deiner Speichergrenze und betrifft nur MP4-Clips im Clip-Ordner.</p></div>
+              <div class="settings-group" id="settingsPanelPrivacy" role="tabpanel" aria-labelledby="settingsTabPrivacy" tabindex="0" data-settings-group="privacy"><div class="settings-panel-head"><div><h3>Datenschutz</h3><p>Du entscheidest, welche Clips online geteilt und gespeichert werden.</p></div><span>KONTO</span></div><div class="privacy-settings"><div class="privacy-setting-row"><div><strong>Meine Clips im Feed zeigen</strong><p>Wenn ausgeschaltet, sehen nur du und dein Konto deine hochgeladenen Clips.</p></div><button class="switch" id="shareClipsSwitch" type="button" aria-pressed="true" aria-label="Meine Clips im Community-Feed zeigen"><span></span></button></div><div class="privacy-setting-row"><div><strong>Neue Clips nur lokal speichern</strong><p>Neue Clips bleiben auf diesem PC und werden nicht hochgeladen. Bereits hochgeladene Clips bleiben online und folgen der Einstellung oben.</p></div><button class="switch" id="localOnlySwitch" type="button" aria-pressed="false" aria-label="Neue Clips nur lokal speichern"><span></span></button></div><p class="settings-help" id="privacySaveStatus" aria-live="polite">Änderungen werden in deinem Konto gespeichert.</p></div></div>
               <div class="settings-group" id="settingsPanelPerformance" role="tabpanel" aria-labelledby="settingsTabPerformance" tabindex="0" data-settings-group="performance"><h3>Leistung und Aufnahmeweg</h3><div class="settings-list"><div><span>Hardware-Encoder verwenden</span><button class="switch is-on" type="button" aria-pressed="true" disabled><span></span></button></div><div><span>Windows Graphics Capture bevorzugen</span><button class="switch is-on" type="button" aria-pressed="true" disabled><span></span></button></div><div><span>Hintergrundpriorität reduzieren</span><button class="switch" id="backgroundPrioritySwitch" type="button" aria-pressed="false"><span></span></button></div></div><div class="settings-fields settings-fields-spaced"><label>Aufnahmemethode<select id="captureMethodSelect"><option value="display" selected>Ganzer Hauptmonitor (alle Apps)</option><option value="auto">Automatisch: Spiel oder Monitor</option><option value="game">Spielfenster (erkannte Session)</option><option value="window">Fenster (erkannte Session)</option></select></label><label>GPU-Auswahl<select disabled><option selected>AMD AMF · System-GPU</option></select></label></div><p class="settings-help">Standardmäßig nimmt Clipfarm den gesamten Hauptmonitor in jeder App auf. Die Spielerkennung bleibt aktiv und zeigt erkannte Spiele in der Session an. Fenster- oder Spieleaufnahme kannst du hier optional auswählen. Für das Overlay im Spiel: Fenstermodus oder randloses Vollbild verwenden. Exklusives Vollbild blendet Desktop-Overlays aus.</p><button class="plain-link" id="testOverlayButton" type="button">Overlay testen</button></div>
               <div class="settings-group" id="settingsPanelInfo" role="tabpanel" aria-labelledby="settingsTabInfo" tabindex="0" data-settings-group="info">
                 <div class="settings-panel-head"><div><h3>Über Clipfarm</h3><p>Versionsdetails und Status der automatischen Updates.</p></div><span>DESKTOP</span></div>
@@ -314,17 +305,23 @@
                     <div class="app-info-update-row"><dt>Update-Status</dt><dd id="appInfoUpdateStatus" aria-live="polite">Prüfung beim Start …</dd></div>
                   </dl>
                 </div>
-                <div class="app-info-actions"><button class="secondary-button" id="checkForUpdatesButton" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#refresh"></use></svg><span>Jetzt nach Updates suchen</span></button><p>Clipfarm prüft beim Start automatisch die neuesten stabilen GitHub-Releases.</p></div>
+                <div class="app-info-actions"><button class="secondary-button" id="checkForUpdatesButton" type="button"><svg class="icon" aria-hidden="true"><use href="./assets/clipfarm-icons.svg#refresh"></use></svg><span>Jetzt nach Updates suchen</span></button><p>Clipfarm prüft beim Start und danach alle fünf Minuten auf eine neue Version.</p><div class="available-update" id="availableUpdate" hidden><span id="availableUpdateText">Ein neues Update ist verfügbar.</span><button class="primary-button" id="installUpdateButton" type="button">Installieren</button></div><label class="autostart-setting"><span><strong>Mit Windows starten</strong><small>Clipfarm läuft im Hintergrund. F8 und das Aufnahme-Overlay bleiben verfügbar.</small></span><input id="autostartSwitch" type="checkbox" /></label></div>
               </div>
             </div>
           </div>
         </section>
+        <footer class="account-footer">
+          <button class="account-rail" id="profileButton" type="button" aria-label="Dein Profil öffnen">
+            <span class="account-avatar" id="sidebarAvatar" aria-hidden="true">C</span>
+            <span class="account-copy"><strong id="accountStatusLabel">Nicht angemeldet</strong><small id="accountStatusDetail">Mein Profil</small></span>
+          </button>
+        </footer>
       </main>
     </div>
 
     <dialog class="playback-dialog" id="playbackDialog" aria-labelledby="playbackTitle">
       <div class="playback-dialog-header"><div><span id="playbackKind">LOKALER CLIP</span><h2 id="playbackTitle"></h2></div><form method="dialog"><button class="icon-button" type="submit" aria-label="Wiedergabe schließen">Schließen</button></form></div>
-      <video id="playbackVideo" controls playsinline preload="metadata"></video>
+      <video id="playbackVideo" controls playsinline preload="none"></video>
     </dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <audio id="clipSuccessSound" src="./erfolgreich.mp3" preload="auto"></audio>

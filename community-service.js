@@ -15,13 +15,15 @@ class CommunityApiError extends Error {
 }
 
 class CommunityService extends EventEmitter {
-  constructor({ safeStorage, sessionPath, stagingDirectory, getClipDirectory }) {
+  constructor({ safeStorage, sessionPath, profileCachePath, stagingDirectory, getClipDirectory }) {
     super();
     this.safeStorage = safeStorage;
     this.sessionPath = sessionPath;
+    this.profileCachePath = profileCachePath;
     this.stagingDirectory = stagingDirectory;
     this.getClipDirectory = getClipDirectory;
     this.account = null;
+    this.profileCache = null;
     this.accessToken = null;
     this.accessExpiresAt = 0;
     this.refreshToken = null;
@@ -33,6 +35,10 @@ class CommunityService extends EventEmitter {
 
   async initialize() {
     fs.mkdirSync(this.stagingDirectory, { recursive: true });
+    try {
+      const profile = JSON.parse(await fs.promises.readFile(this.profileCachePath, "utf8"));
+      if (profile && typeof profile.id === "string" && typeof profile.localOnly === "boolean") this.profileCache = profile;
+    } catch { /* A missing or invalid profile cache is reloaded after sign-in. */ }
     let entries = [];
     try {
       const value = JSON.parse(await fs.promises.readFile(this.manifestPath(), "utf8"));
@@ -81,7 +87,12 @@ class CommunityService extends EventEmitter {
 
   publicAccount(account = this.account) {
     if (!account || typeof account.id !== "string" || typeof account.username !== "string") return null;
-    return { id: account.id, username: account.username };
+    return {
+      id: account.id,
+      username: account.username,
+      displayName: this.cleanText(account.displayName, 32) || account.username,
+      avatarUrl: typeof account.avatarUrl === "string" ? account.avatarUrl : null
+    };
   }
 
   async requireSecureStorage() {
@@ -346,6 +357,63 @@ class CommunityService extends EventEmitter {
     return payload;
   }
 
+  async getMyClips(cursor = null) {
+    const query = new URLSearchParams({ scope: "mine", sort: "uploadedAt", order: "desc" });
+    if (cursor !== null) {
+      if (typeof cursor !== "string" || cursor.length > 1024) throw new Error("Der Feed-Zeiger ist ungültig.");
+      query.set("cursor", cursor);
+    }
+    const payload = await this.authenticatedRequest("/clips?" + query.toString(), { headers: { Accept: "application/json" } });
+    if (!payload || !Array.isArray(payload.clips)) throw new Error("Der Clipfarm-Server hat eine ungültige Clipbibliothek zurückgegeben.");
+    const origin = new URL(backendConfig.origin).origin;
+    payload.clips = payload.clips.map((clip) => {
+      const media = new URL(clip.mediaUrl);
+      if (media.protocol !== "https:" || media.origin !== origin || !media.pathname.startsWith("/api/v1/clips/")) {
+        throw new Error("Ein Clip verweist auf eine nicht vertrauenswürdige Medienadresse.");
+      }
+      return { ...clip, mediaUrl: media.href };
+    });
+    return payload;
+  }
+
+  async getProfile() {
+    if (!this.account) throw new Error("Melde dich an, um dein Profil zu öffnen.");
+    try {
+      const payload = await this.authenticatedRequest("/profile", { headers: { Accept: "application/json" } });
+      if (!payload.profile || payload.profile.id !== this.account.id) throw new Error("Der Server hat ein ungültiges Profil zurückgegeben.");
+      this.profileCache = payload.profile;
+      this.account = this.publicAccount(payload.profile);
+      await fs.promises.writeFile(this.profileCachePath, JSON.stringify(this.profileCache), { mode: 0o600 });
+      this.emit("account", this.publicAccount());
+      return this.profileCache;
+    } catch (error) {
+      if (this.profileCache?.id === this.account.id) return this.profileCache;
+      throw error;
+    }
+  }
+
+  async updateProfile(profile) {
+    const payload = await this.authenticatedRequest("/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(profile)
+    });
+    if (!payload.profile || payload.profile.id !== this.account?.id) throw new Error("Der Server hat das Profil nicht bestätigt.");
+    this.profileCache = payload.profile;
+    this.account = this.publicAccount(payload.profile);
+    await fs.promises.writeFile(this.profileCachePath, JSON.stringify(this.profileCache), { mode: 0o600 });
+    this.emit("account", this.publicAccount());
+    return this.profileCache;
+  }
+
+  async changePassword(currentPassword, newPassword) {
+    return this.authenticatedRequest("/profile/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ currentPassword, newPassword })
+    });
+  }
+
   safeUpload(item) {
     return {
       id: item.id,
@@ -403,21 +471,25 @@ class CommunityService extends EventEmitter {
     if (path.extname(sourceFile).toLowerCase() !== ".mp4") throw new Error("Nur MP4-Clips können hochgeladen werden.");
     const clipDirectory = path.resolve(await this.getClipDirectory());
     const realDirectory = await fs.promises.realpath(clipDirectory);
+    const realStagingDirectory = await fs.promises.realpath(this.stagingDirectory);
     const sourceStat = await fs.promises.lstat(sourceFile);
     if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw new Error("Die Clip-Datei ist ungültig.");
     const realSourceFile = await fs.promises.realpath(sourceFile);
     const relative = path.relative(realDirectory, realSourceFile);
-    if (!relative || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+    const stageRelative = path.relative(realStagingDirectory, realSourceFile);
+    const isStagedCapture = Boolean(stageRelative) && !stageRelative.startsWith(".." + path.sep) && !path.isAbsolute(stageRelative);
+    if (!isStagedCapture && (!relative || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))) {
       throw new Error("Die Clip-Datei liegt außerhalb des konfigurierten Clip-Ordners.");
     }
     const existing = [...this.uploads.values()].find((item) => item.sourceFile === realSourceFile);
     if (existing) return this.safeUpload(existing);
     const stat = await fs.promises.stat(realSourceFile);
     if (stat.size < 12 || stat.size > 2 * 1024 * 1024 * 1024) throw new Error("Die Clip-Datei ist leer oder größer als 2 GB.");
-    const id = crypto.randomUUID();
+    const stagedId = path.basename(realSourceFile, path.extname(realSourceFile));
+    const id = isStagedCapture && /^[0-9a-f-]{36}$/i.test(stagedId) ? stagedId : crypto.randomUUID();
     const fileName = id + ".mp4";
-    const filePath = path.join(this.stagingDirectory, fileName);
-    await fs.promises.copyFile(realSourceFile, filePath, fs.constants.COPYFILE_EXCL);
+    const filePath = isStagedCapture ? realSourceFile : path.join(this.stagingDirectory, fileName);
+    if (!isStagedCapture) await fs.promises.copyFile(realSourceFile, filePath, fs.constants.COPYFILE_EXCL);
     const item = {
       id,
       fileName,

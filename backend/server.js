@@ -16,6 +16,7 @@ const PORT = Number(process.env.CLIPFARM_API_PORT || 4188);
 const PUBLIC_ORIGIN = String(process.env.CLIPFARM_PUBLIC_ORIGIN || "https://benni-projects.de").replace(/\/+$/, "");
 const DATA_DIRECTORY = process.env.CLIPFARM_DATA_DIR || "/var/lib/clipfarm-api";
 const MEDIA_DIRECTORY = path.join(DATA_DIRECTORY, "media");
+const AVATAR_DIRECTORY = path.join(DATA_DIRECTORY, "avatars");
 const DATABASE_PATH = path.join(DATA_DIRECTORY, "clipfarm.sqlite");
 const MAX_CLIP_BYTES = 2 * 1024 * 1024 * 1024;
 const ACCESS_LIFETIME_SECONDS = 15 * 60;
@@ -25,6 +26,7 @@ const TOKEN_SECRET = Buffer.from(String(process.env.CLIPFARM_TOKEN_SECRET || "")
 if (TOKEN_SECRET.length < 32) throw new Error("CLIPFARM_TOKEN_SECRET must contain at least 32 random bytes.");
 if (!/^https:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(PUBLIC_ORIGIN)) throw new Error("CLIPFARM_PUBLIC_ORIGIN must be an HTTPS origin.");
 fs.mkdirSync(MEDIA_DIRECTORY, { recursive: true, mode: 0o700 });
+fs.mkdirSync(AVATAR_DIRECTORY, { recursive: true, mode: 0o700 });
 
 const database = new DatabaseSync(DATABASE_PATH);
 database.exec(
@@ -44,6 +46,17 @@ database.exec(
   "media_file TEXT NOT NULL UNIQUE, idempotency_key TEXT NOT NULL, UNIQUE(user_id, idempotency_key));" +
   "CREATE INDEX IF NOT EXISTS clips_feed_idx ON clips(uploaded_at DESC, id DESC);"
 );
+const userColumns = new Set(database.prepare("PRAGMA table_info(users)").all().map((column) => column.name));
+for (const [name, definition] of [
+  ["display_name", "TEXT NOT NULL DEFAULT ''"],
+  ["bio", "TEXT NOT NULL DEFAULT ''"],
+  ["avatar_file", "TEXT"],
+  ["feed_public", "INTEGER NOT NULL DEFAULT 1"],
+  ["local_only", "INTEGER NOT NULL DEFAULT 0"]
+]) {
+  if (!userColumns.has(name)) database.exec(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
+}
+database.exec("UPDATE users SET display_name = username WHERE display_name = ''");
 
 class ApiError extends Error {
   constructor(status, message) {
@@ -141,6 +154,15 @@ function makeAccessToken(user, sessionId) {
   return { token: body + "." + signature, expiresAt: new Date((now + ACCESS_LIFETIME_SECONDS) * 1000).toISOString() };
 }
 
+function publicUser(row) {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name || row.username,
+    avatarUrl: publicAvatarUrl({ id: row.id, avatar_file: row.avatar_file })
+  };
+}
+
 function verifyAccessToken(token) {
   const parts = String(token || "").split(".");
   if (parts.length !== 3) throw new ApiError(401, "Melde dich erneut an.");
@@ -166,7 +188,7 @@ function authenticate(request) {
   const match = /^Bearer ([A-Za-z0-9._-]{20,4096})$/i.exec(String(request.headers.authorization || ""));
   if (!match) throw new ApiError(401, "Melde dich an, um fortzufahren.");
   const claims = verifyAccessToken(match[1]);
-  const user = database.prepare("SELECT id, username FROM users WHERE id = ?").get(claims.sub);
+  const user = database.prepare("SELECT id, username, display_name, bio, avatar_file, feed_public, local_only FROM users WHERE id = ?").get(claims.sub);
   if (!user) throw new ApiError(401, "Melde dich erneut an.");
   return { user, sessionId: claims.sid };
 }
@@ -186,7 +208,7 @@ function createSession(user) {
     accessToken: access.token,
     accessExpiresAt: access.expiresAt,
     refreshToken,
-    user: { id: user.id, username: user.username }
+    user: publicUser(user)
   };
 }
 
@@ -199,7 +221,8 @@ function rotateSession(refreshToken) {
   database.exec("BEGIN IMMEDIATE");
   try {
     const row = database.prepare(
-      "SELECT rt.session_id AS sessionId, rt.user_id AS userId, u.username AS username " +
+      "SELECT rt.session_id AS sessionId, rt.user_id AS userId, u.username AS username, " +
+      "u.display_name AS display_name, u.avatar_file AS avatar_file " +
       "FROM refresh_tokens rt JOIN users u ON u.id = rt.user_id " +
       "WHERE rt.token_hash = ? AND rt.revoked_at IS NULL AND rt.expires_at > ?"
     ).get(oldHash, now);
@@ -212,12 +235,13 @@ function rotateSession(refreshToken) {
     database.prepare("INSERT INTO refresh_tokens (token_hash, session_id, user_id, expires_at) VALUES (?, ?, ?, ?)")
       .run(refreshHash(nextToken), row.sessionId, row.userId, now + REFRESH_LIFETIME_SECONDS);
     database.exec("COMMIT");
-    const access = makeAccessToken({ id: row.userId, username: row.username }, row.sessionId);
+    const user = { id: row.userId, username: row.username, display_name: row.display_name, avatar_file: row.avatar_file };
+    const access = makeAccessToken(user, row.sessionId);
     return {
       accessToken: access.token,
       accessExpiresAt: access.expiresAt,
       refreshToken: nextToken,
-      user: { id: row.userId, username: row.username }
+      user: publicUser(user)
     };
   } catch (error) {
     if (!(error instanceof ApiError)) {
@@ -227,22 +251,53 @@ function rotateSession(refreshToken) {
   }
 }
 
-function publicClip(row) {
+function playbackToken(clipId, viewerId) {
+  const payload = base64url(JSON.stringify({ clipId, viewerId, expiresAt: Math.floor(Date.now() / 1000) + 60 * 60 }));
+  const signature = crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest("base64url");
+  return payload + "." + signature;
+}
+
+function verifyPlaybackToken(token, clipId) {
+  const [payload, signature, extra] = String(token || "").split(".");
+  if (!payload || !signature || extra !== undefined) throw new ApiError(401, "Die Wiedergabeadresse ist ungültig oder abgelaufen.");
+  const expected = crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest();
+  let actual;
+  try { actual = Buffer.from(signature, "base64url"); } catch { throw new ApiError(401, "Die Wiedergabeadresse ist ungültig oder abgelaufen."); }
+  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) throw new ApiError(401, "Die Wiedergabeadresse ist ungültig oder abgelaufen.");
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (claims.clipId !== clipId || typeof claims.viewerId !== "string" || claims.expiresAt <= Math.floor(Date.now() / 1000)) throw new Error("invalid token");
+    return claims;
+  } catch {
+    throw new ApiError(401, "Die Wiedergabeadresse ist ungültig oder abgelaufen.");
+  }
+}
+
+function publicAvatarUrl(row) {
+  return row.avatar_file ? PUBLIC_ORIGIN + API_PREFIX + "/users/" + row.id + "/avatar" : null;
+}
+
+function publicClip(row, viewerId) {
+  const mediaPath = API_PREFIX + "/clips/" + row.id + "/media";
   return {
     id: row.id,
     title: row.title,
-    creator: row.username,
+    creator: row.display_name || row.username,
+    creatorUsername: row.username,
+    creatorId: row.creator_id,
+    creatorAvatarUrl: publicAvatarUrl({ id: row.creator_id, avatar_file: row.avatar_file }),
     game: row.game,
     uploadedAt: row.uploaded_at,
     durationSeconds: row.duration_seconds,
     sizeBytes: row.size_bytes,
     thumbnailUrl: null,
-    mediaUrl: PUBLIC_ORIGIN + API_PREFIX + "/clips/" + row.id + "/media"
+    mediaUrl: PUBLIC_ORIGIN + mediaPath + "?token=" + encodeURIComponent(playbackToken(row.id, viewerId))
   };
 }
 
 const clipSelect =
-  "SELECT c.id, c.title, c.game, c.duration_seconds, c.uploaded_at, c.size_bytes, c.media_file, u.username " +
+  "SELECT c.id, c.user_id AS owner_id, c.title, c.game, c.duration_seconds, c.uploaded_at, c.size_bytes, c.media_file, " +
+  "u.id AS creator_id, u.username, u.display_name, u.avatar_file, u.feed_public " +
   "FROM clips c JOIN users u ON u.id = c.user_id";
 
 function parseCursor(value) {
@@ -282,7 +337,7 @@ async function uploadClip(request, response, user) {
   }
   const duplicate = existingClip(user.id, idempotencyKey);
   if (duplicate) {
-    json(response, 200, { clip: publicClip(duplicate), stored: true, duplicate: true });
+    json(response, 200, { clip: publicClip(duplicate, user.id), stored: true, duplicate: true });
     request.resume();
     return;
   }
@@ -341,13 +396,13 @@ async function uploadClip(request, response, user) {
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(clip.id, clip.userId, clip.title, clip.game, clip.durationSeconds, clip.uploadedAt, clip.sizeBytes, clip.mediaFile, clip.idempotencyKey);
     const saved = database.prepare(clipSelect + " WHERE c.id = ?").get(clipId);
-    json(response, 201, { clip: publicClip(saved), stored: true, duplicate: false });
+    json(response, 201, { clip: publicClip(saved, user.id), stored: true, duplicate: false });
   } catch (error) {
     await fs.promises.rm(partialPath, { force: true }).catch(() => {});
     const duplicateAfterRace = existingClip(user.id, idempotencyKey);
     if (duplicateAfterRace) {
       await fs.promises.rm(finalPath, { force: true }).catch(() => {});
-      if (!response.headersSent) json(response, 200, { clip: publicClip(duplicateAfterRace), stored: true, duplicate: true });
+      if (!response.headersSent) json(response, 200, { clip: publicClip(duplicateAfterRace, user.id), stored: true, duplicate: true });
       return;
     }
     await fs.promises.rm(finalPath, { force: true }).catch(() => {});
@@ -355,7 +410,7 @@ async function uploadClip(request, response, user) {
   }
 }
 
-function streamMedia(request, response, row) {
+function streamMedia(request, response, row, viewerId) {
   const fileName = path.basename(row.media_file);
   if (fileName !== row.media_file) throw new ApiError(404, "Clip nicht gefunden.");
   const filename = path.join(MEDIA_DIRECTORY, fileName);
@@ -365,7 +420,7 @@ function streamMedia(request, response, row) {
     "Content-Type": "video/mp4",
     "Content-Length": stat.size,
     "Accept-Ranges": "bytes",
-    "Cache-Control": "public, max-age=3600",
+    "Cache-Control": "private, no-store",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Content-Disposition": "inline; filename=\"clip.mp4\""
@@ -433,8 +488,8 @@ async function route(request, response, url) {
     const passwordHash = await hashPassword(credentials.password, salt);
     const user = { id: crypto.randomUUID(), username: credentials.username };
     try {
-      database.prepare("INSERT INTO users (id, username, password_salt, password_hash, created_at) VALUES (?, ?, ?, ?, ?)")
-        .run(user.id, user.username, salt, passwordHash, new Date().toISOString());
+      database.prepare("INSERT INTO users (id, username, password_salt, password_hash, created_at, display_name) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(user.id, user.username, salt, passwordHash, new Date().toISOString(), user.username);
     } catch (error) {
       if (String(error.message).includes("UNIQUE")) throw new ApiError(409, "Dieser Username ist bereits vergeben.");
       throw error;
@@ -462,7 +517,7 @@ async function route(request, response, url) {
   }
   if (pathname === API_PREFIX + "/auth/session" && request.method === "GET") {
     const { user } = authenticate(request);
-    json(response, 200, { authenticated: true, user });
+    json(response, 200, { authenticated: true, user: publicUser(user) });
     return;
   }
   if (pathname === API_PREFIX + "/auth/logout" && request.method === "POST") {
@@ -472,22 +527,112 @@ async function route(request, response, url) {
     empty(response);
     return;
   }
+  const avatarMatch = new RegExp("^" + API_PREFIX + "/users/([0-9a-f-]{36})/avatar$", "i").exec(pathname);
+  if (avatarMatch && (request.method === "GET" || request.method === "HEAD")) {
+    const avatar = database.prepare("SELECT avatar_file FROM users WHERE id = ?").get(avatarMatch[1])?.avatar_file;
+    if (!avatar || path.basename(avatar) !== avatar || !/^avatar-[0-9a-f-]{36}-[0-9a-f-]{36}\.(?:png|jpg|webp)$/i.test(avatar)) {
+      throw new ApiError(404, "Profilbild nicht gefunden.");
+    }
+    const imagePath = path.join(AVATAR_DIRECTORY, avatar);
+    let stat;
+    try { stat = fs.statSync(imagePath); } catch { throw new ApiError(404, "Profilbild nicht gefunden."); }
+    const extension = path.extname(avatar).toLowerCase();
+    const contentType = extension === ".png" ? "image/png" : extension === ".webp" ? "image/webp" : "image/jpeg";
+    response.writeHead(200, { "Content-Type": contentType, "Content-Length": stat.size, "Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" });
+    if (request.method === "HEAD") response.end();
+    else fs.createReadStream(imagePath).pipe(response);
+    return;
+  }
+  if (pathname === API_PREFIX + "/profile" && request.method === "GET") {
+    const { user } = authenticate(request);
+    json(response, 200, { profile: { ...publicUser(user), bio: user.bio || "", shareClips: Boolean(user.feed_public), localOnly: Boolean(user.local_only) } });
+    return;
+  }
+  if (pathname === API_PREFIX + "/profile" && request.method === "POST") {
+    const { user } = authenticate(request);
+    const body = await readJson(request, 3 * 1024 * 1024);
+    const displayName = cleanText(body.displayName, 32);
+    if (!displayName) throw new ApiError(400, "Der Anzeigename darf nicht leer sein.");
+    const bio = cleanText(body.bio, 280);
+    const shareClips = typeof body.shareClips === "boolean" ? body.shareClips : Boolean(user.feed_public);
+    const localOnly = typeof body.localOnly === "boolean" ? body.localOnly : Boolean(user.local_only);
+    const previousAvatar = user.avatar_file || null;
+    let nextAvatar = previousAvatar;
+    let createdAvatar = null;
+    if (Object.prototype.hasOwnProperty.call(body, "avatarData")) {
+      if (body.avatarData === null || body.avatarData === "") nextAvatar = null;
+      else {
+        if (typeof body.avatarData !== "string" || body.avatarData.length > 2_000_000) throw new ApiError(413, "Das Profilbild darf höchstens 1,5 MB groß sein.");
+        const imageMatch = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(body.avatarData);
+        if (!imageMatch) throw new ApiError(400, "Das Profilbild muss PNG, JPG oder WebP sein.");
+        const bytes = Buffer.from(imageMatch[2], "base64");
+        if (bytes.length < 16 || bytes.length > 1_500_000 || bytes.toString("base64") !== imageMatch[2]) throw new ApiError(400, "Das Profilbild ist ungültig oder größer als 1,5 MB.");
+        let extension = null;
+        if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) extension = "png";
+        else if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) extension = "jpg";
+        else if (bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") extension = "webp";
+        const declaredExtension = imageMatch[1] === "image/png" ? "png" : imageMatch[1] === "image/webp" ? "webp" : "jpg";
+        if (extension !== declaredExtension) throw new ApiError(400, "Die Bilddaten stimmen nicht mit dem Dateityp überein.");
+        const filename = `avatar-${user.id}-${crypto.randomUUID()}.${extension}`;
+        createdAvatar = path.join(AVATAR_DIRECTORY, filename);
+        await fs.promises.writeFile(createdAvatar, bytes, { flag: "wx", mode: 0o600 });
+        nextAvatar = filename;
+      }
+    }
+    try {
+      database.prepare("UPDATE users SET display_name = ?, bio = ?, avatar_file = ?, feed_public = ?, local_only = ? WHERE id = ?")
+        .run(displayName, bio, nextAvatar, shareClips ? 1 : 0, localOnly ? 1 : 0, user.id);
+    } catch (error) {
+      if (createdAvatar) await fs.promises.rm(createdAvatar, { force: true }).catch(() => {});
+      throw error;
+    }
+    if (previousAvatar && previousAvatar !== nextAvatar && /^avatar-[0-9a-f-]{36}-[0-9a-f-]{36}\.(?:png|jpg|webp)$/i.test(previousAvatar)) {
+      await fs.promises.rm(path.join(AVATAR_DIRECTORY, previousAvatar), { force: true }).catch(() => {});
+    }
+    const profile = database.prepare("SELECT id, username, display_name, bio, avatar_file, feed_public, local_only FROM users WHERE id = ?").get(user.id);
+    json(response, 200, { profile: { ...publicUser(profile), bio: profile.bio, shareClips: Boolean(profile.feed_public), localOnly: Boolean(profile.local_only) } });
+    return;
+  }
+  if (pathname === API_PREFIX + "/profile/password" && request.method === "POST") {
+    const { user, sessionId } = authenticate(request);
+    checkRateLimit(request, "password-change:" + user.id, 5, 60 * 60 * 1000);
+    const body = await readJson(request);
+    const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
+    const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+    if (!currentPassword || Buffer.byteLength(currentPassword, "utf8") > 256 || newPassword.length < 10 || Buffer.byteLength(newPassword, "utf8") > 256) throw new ApiError(400, "Das neue Passwort muss mindestens 10 Zeichen lang sein.");
+    const credentials = database.prepare("SELECT password_salt, password_hash FROM users WHERE id = ?").get(user.id);
+    const oldHash = await hashPassword(currentPassword, Buffer.from(credentials.password_salt));
+    const storedHash = Buffer.from(credentials.password_hash);
+    if (storedHash.length !== oldHash.length || !crypto.timingSafeEqual(storedHash, oldHash)) throw new ApiError(401, "Das aktuelle Passwort stimmt nicht.");
+    const salt = crypto.randomBytes(16);
+    const passwordHash = await hashPassword(newPassword, salt);
+    const now = Math.floor(Date.now() / 1000);
+    database.prepare("UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?").run(salt, passwordHash, user.id);
+    database.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND session_id != ? AND revoked_at IS NULL").run(now, user.id, sessionId);
+    json(response, 200, { changed: true });
+    return;
+  }
   if (pathname === API_PREFIX + "/clips" && request.method === "GET") {
     const { user } = authenticate(request);
     const cursor = parseCursor(url.searchParams.get("cursor"));
+    const scopeMine = url.searchParams.get("scope") === "mine";
     const limit = 30;
-    const rows = cursor
-      ? database.prepare(clipSelect + " WHERE (c.uploaded_at < ? OR (c.uploaded_at = ? AND c.id < ?)) ORDER BY c.uploaded_at DESC, c.id DESC LIMIT ?")
-        .all(cursor.uploadedAt, cursor.uploadedAt, cursor.id, limit + 1)
-      : database.prepare(clipSelect + " ORDER BY c.uploaded_at DESC, c.id DESC LIMIT ?").all(limit + 1);
+    const conditions = scopeMine ? " WHERE c.user_id = ?" : " WHERE (u.feed_public = 1 OR c.user_id = ?)";
+    const parameters = [user.id];
+    let cursorClause = "";
+    if (cursor) {
+      cursorClause = " AND (c.uploaded_at < ? OR (c.uploaded_at = ? AND c.id < ?))";
+      parameters.push(cursor.uploadedAt, cursor.uploadedAt, cursor.id);
+    }
+    const rows = database.prepare(clipSelect + conditions + cursorClause + " ORDER BY c.uploaded_at DESC, c.id DESC LIMIT ?").all(...parameters, limit + 1);
     const hasMore = rows.length > limit;
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
     json(response, 200, {
-      clips: page.map(publicClip),
+      clips: page.map((clip) => publicClip(clip, user.id)),
       nextCursor: hasMore && last ? base64url(JSON.stringify({ uploadedAt: last.uploaded_at, id: last.id })) : null,
       sort: "uploadedAt:desc",
-      viewer: { id: user.id, username: user.username }
+      viewer: publicUser(user)
     });
     return;
   }
@@ -498,9 +643,11 @@ async function route(request, response, url) {
   }
   const mediaMatch = new RegExp("^" + API_PREFIX + "/clips/([0-9a-f-]{36})/media$", "i").exec(pathname);
   if (mediaMatch && (request.method === "GET" || request.method === "HEAD")) {
+    const token = verifyPlaybackToken(url.searchParams.get("token"), mediaMatch[1]);
     const row = database.prepare(clipSelect + " WHERE c.id = ?").get(mediaMatch[1]);
     if (!row) throw new ApiError(404, "Clip nicht gefunden.");
-    streamMedia(request, response, row);
+    if (row.owner_id !== token.viewerId && !row.feed_public) throw new ApiError(403, "Dieser Clip ist nicht öffentlich verfügbar.");
+    streamMedia(request, response, row, token.viewerId);
     return;
   }
   if (request.method !== "GET" && request.method !== "HEAD") {

@@ -711,11 +711,11 @@ async function startCaptureInternal() {
   let microphoneInput = null;
   if (includeSystemAudio) {
     systemInput = nextInput++;
-    args.push("-thread_queue_size", "16", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", `pipe:${systemFd}`);
+    args.push("-thread_queue_size", "4", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", `pipe:${systemFd}`);
   }
   if (includeMicrophone) {
     microphoneInput = nextInput++;
-    args.push("-thread_queue_size", "16", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", `pipe:${microphoneFd}`);
+    args.push("-thread_queue_size", "4", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", `pipe:${microphoneFd}`);
   }
   if (audioInputCount === 0) {
     args.push("-map", "0:v:0", "-an");
@@ -733,7 +733,7 @@ async function startCaptureInternal() {
     "-r", String(engineConfig.fps), "-fps_mode", "cfr",
     "-c:v", engineConfig.encoder, "-usage", "lowlatency", "-quality", quality,
     "-b:v", engineConfig.bitrate, "-g", String(Math.max(1, Math.round(engineConfig.fps * SEGMENT_DURATION_SECONDS))), "-pix_fmt", "d3d11",
-    "-max_muxing_queue_size", "64",
+    "-max_muxing_queue_size", "32",
     "-f", "segment", "-segment_time", String(SEGMENT_DURATION_SECONDS), "-segment_wrap", String(segmentCount),
     "-segment_list", path.join(bufferDirectory, "segments.ffconcat"), "-segment_list_type", "ffconcat",
     "-segment_list_size", String(segmentCount),

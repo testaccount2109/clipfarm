@@ -28,6 +28,10 @@ const state = {
   hotkeyCapture: null,
   filter: "all",
   clips: loadClips(),
+  cloudClips: [],
+  profile: null,
+  pendingAvatarData: undefined,
+  cloudLibraryLoading: false,
   activeView: "feed",
   backendStatus: null,
   backendCheckInFlight: false,
@@ -46,6 +50,11 @@ const state = {
 };
 
 function loadClips() {
+  if (localStorage.getItem("clipfarm-cloud-media-migration") !== "1") {
+    localStorage.removeItem("clipfarm-clips");
+    localStorage.setItem("clipfarm-cloud-media-migration", "1");
+    return [];
+  }
   try {
     const saved = JSON.parse(localStorage.getItem("clipfarm-clips"));
     return Array.isArray(saved) ? saved.filter((clip) => !demoClipNames.has(clip.name)) : [];
@@ -79,7 +88,7 @@ function playClipOutcome(success, { notifyOverlay = true, message = "" } = {}) {
 }
 
 function setView(view) {
-  if (!["feed", "session", "library", "settings"].includes(view)) return;
+  if (!["feed", "session", "library", "settings", "profile"].includes(view)) return;
   state.activeView = view;
   document.querySelectorAll(".nav-item").forEach((button) => {
     const active = button.dataset.view === view;
@@ -96,11 +105,14 @@ function setView(view) {
     feed: ["Feed", "Momente aus deinen Spielen"],
     session: ["Session", "Capture-Workbench"],
     library: ["Meine Clips", "Auf diesem PC"],
-    settings: ["Einstellungen", "Dein Setup"]
+    settings: ["Einstellungen", "Dein Setup"],
+    profile: ["Mein Profil", "Dein Konto"]
   };
   $("pageTitle").textContent = headings[view][0];
   $("pageEyebrow").textContent = headings[view][1];
   if (view === "library") renderLibrary();
+  if (view === "library") loadLibraryClips();
+  if (view === "profile") loadProfile();
 }
 
 function toggleSwitch(button) {
@@ -229,35 +241,22 @@ async function saveClip() {
           : 'Der Replay-Puffer startet noch. Warte auf die ersten Segmente und versuche es erneut.';
     playClipOutcome(false, { message }); showToast(message); return;
   }
-  if (!window.location.protocol.startsWith('http')) {
-    showToast('Clipfarm kann den Clip nur lokal sichern.');
-    return;
-  }
   state.clipSaving = true;
   $("saveClipButton").disabled = true;
   $("saveClipButton").setAttribute("aria-busy", "true");
   const savingMessage = state.engineLive
     ? `${state.bufferSeconds} Sekunden Puffer + ${state.postRollSeconds} Sekunden Nachlauf – Clip wird gesichert.`
     : `${state.bufferSeconds} Sekunden aus dem vorhandenen Puffer werden gesichert.`;
-  window.clipfarmNative?.notifyClipOutcome({ outcome: 'saving', message: savingMessage }).catch(() => {});
   try {
-    const response = await fetch('/api/clip/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seconds: state.bufferSeconds, game: state.sessionGame || 'Game' })
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || 'Clip konnte nicht gespeichert werden');
-    addClip(payload.clip);
-    try {
-      if (!window.clipfarmNative?.queueClipUpload) throw new Error('Die sichere Upload-Warteschlange ist nicht verfügbar.');
-      await window.clipfarmNative.queueClipUpload(payload.clip);
+    if (!window.clipfarmNative?.saveClip) throw new Error('Clipfarm kann den Clip nur in der Desktop-App sichern.');
+    const payload = await window.clipfarmNative.saveClip();
+    if (payload.localOnly) {
+      addClip(payload.clip);
+      await syncDiskClips();
+      showToast('Clip nur auf diesem PC gespeichert.');
+    } else {
       await refreshUploadQueue();
-      playClipOutcome(true, { message: payload.clip?.name || 'Clip gespeichert' });
-      showToast('Clip gesichert und zur Upload-Warteschlange hinzugefügt.');
-    } catch (uploadError) {
-      playClipOutcome(true, { message: payload.clip?.name || 'Clip lokal gesichert' });
-      showToast(`Lokal gesichert. Upload wartet: ${uploadError.message}`);
+      showToast('Clip wird sicher zum Server hochgeladen.');
     }
   } catch (error) {
     playClipOutcome(false, { message: error.message });
@@ -278,7 +277,7 @@ function addClip(realClip = {}) {
   const clip = { id, file: realClip.file, name, game, date: `Heute um ${formatNow()}`, duration: formatDuration(seconds), resolution: realClip.resolution || "n/a", fps: realClip.fps || "n/a", size, thumbnail: realClip.thumbnail || null };
   state.clips = [clip, ...state.clips];
   persistClips();
-  renderRecent();
+  renderLibrary();
   updateClipCount();
 }
 
@@ -286,7 +285,7 @@ function thumbnail(clip, compact = false) {
   const el = document.createElement("button");
   el.type = "button";
   el.className = `thumb ${compact ? "library-thumb" : ""}`;
-  const canPlay = Boolean(clip.file);
+  const canPlay = Boolean(clip.file || clip.mediaUrl);
   el.disabled = !canPlay;
   el.setAttribute("aria-label", canPlay ? `Clip abspielen: ${clip.name}` : `Keine Videodatei für ${clip.name} verfügbar`);
   el.addEventListener("click", () => playClip(clip));
@@ -325,40 +324,25 @@ function thumbnail(clip, compact = false) {
   return el;
 }
 
-function renderRecent() {
-  const container = $("recentClips");
-  container.replaceChildren();
-  $("localRecentEmpty").hidden = state.clips.length > 0;
-  state.clips.slice(0, 3).forEach((clip) => {
-    const card = document.createElement("article");
-    card.className = "clip-card";
-    card.append(thumbnail(clip));
-    const title = document.createElement("h3"); title.textContent = clip.name;
-    const meta = document.createElement("div"); meta.className = "clip-card-meta";
-    const date = document.createElement("span"); date.textContent = clip.date || "";
-    const size = document.createElement("span"); size.textContent = clip.size || "";
-    meta.append(date, size);
-    card.append(title, meta); container.append(card);
-  });
-}
-
 function renderLibrary() {
   const list = $("libraryList");
   const query = $("clipSearch").value.trim().toLowerCase();
-  const clips = state.clips.filter((clip) => {
+  const allClips = [...state.cloudClips, ...state.clips];
+  const clips = allClips.filter((clip) => {
     const matchesQuery = !query || `${clip.name} ${clip.game}`.toLowerCase().includes(query);
-    const matchesFilter = state.filter === "all" || String(clip.date || "").startsWith("Heute");
+    const date = clip.uploadedAt ? new Date(clip.uploadedAt).toLocaleDateString("de-DE") : String(clip.date || "");
+    const matchesFilter = state.filter === "all" || date === new Date().toLocaleDateString("de-DE") || date.startsWith("Heute");
     return matchesQuery && matchesFilter;
   });
   list.replaceChildren();
-  $("libraryTotalCount").textContent = state.clips.length.toLocaleString("de-DE");
-  $("libraryResultCount").textContent = `${clips.length} von ${state.clips.length} ${state.clips.length === 1 ? "Clip" : "Clips"}`;
+  $("libraryTotalCount").textContent = allClips.length.toLocaleString("de-DE");
+  $("libraryResultCount").textContent = `${clips.length} von ${allClips.length} ${allClips.length === 1 ? "Clip" : "Clips"}`;
   $("emptyLibrary").hidden = clips.length > 0;
-  const hasSavedClips = state.clips.length > 0;
+  const hasSavedClips = allClips.length > 0;
   $("emptyLibrary").querySelector("h3").textContent = hasSavedClips ? "Kein Clip gefunden" : "Noch keine Clips gespeichert";
   $("emptyLibrary").querySelector("p").textContent = hasSavedClips
     ? "Ändere den Suchbegriff oder setze den Heute-Filter zurück."
-    : "Sichere einen Moment mit F8. Deine Aufnahmen erscheinen hier automatisch.";
+    : state.profile?.localOnly ? "Sichere einen Moment mit F8. Deine lokalen Clips erscheinen hier." : "Sichere einen Moment mit F8. Deine Clips erscheinen hier, sobald der Upload fertig ist.";
   $("emptySessionButton").textContent = hasSavedClips ? "Filter zurücksetzen" : "Zur Aufnahme";
   clips.forEach((clip) => {
     const card = document.createElement("article"); card.className = "clip-library-card";
@@ -369,11 +353,13 @@ function renderLibrary() {
     const game = document.createElement("p"); game.textContent = clip.game || "Spielaufnahme";
     heading.append(title, game);
     const meta = document.createElement("div"); meta.className = "clip-card-details";
-    const saved = document.createElement("span"); saved.textContent = clip.date || "";
-    const format = document.createElement("span"); format.textContent = `${clip.duration || "—"} · ${clip.resolution || "n/a"} · ${clip.fps || "n/a"} FPS`;
+    const saved = document.createElement("span"); saved.textContent = clip.uploadedAt ? new Date(clip.uploadedAt).toLocaleString("de-DE", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : clip.date || "";
+    const format = document.createElement("span"); format.textContent = `${clip.duration || (clip.durationSeconds ? formatDuration(clip.durationSeconds) : "—")} · ${clip.size || (clip.sizeBytes ? `${(clip.sizeBytes / 1048576).toFixed(1).replace(".", ",")} MB` : "Online")}`;
     meta.append(saved, format);
     const actions = document.createElement("div"); actions.className = "clip-card-actions";
-    const play = document.createElement("button"); play.className = "clip-card-play"; play.type = "button"; play.disabled = !clip.file; play.textContent = "Abspielen"; play.addEventListener("click", () => playClip(clip));
+    const play = document.createElement("button"); play.className = "clip-card-play"; play.type = "button"; play.disabled = !(clip.file || clip.mediaUrl); play.textContent = clip.mediaUrl ? "Vom Server ansehen" : "Abspielen"; play.addEventListener("click", () => playClip(clip));
+    actions.append(play);
+    if (!clip.mediaUrl) {
     const more = document.createElement("details"); more.className = "clip-card-more";
     const summary = document.createElement("summary"); summary.textContent = "···"; summary.title = `Weitere Aktionen für ${clip.name}`; summary.setAttribute("aria-label", `Weitere Aktionen für ${clip.name}`);
     const menu = document.createElement("div"); menu.className = "clip-actions-menu";
@@ -387,7 +373,7 @@ function renderLibrary() {
     action("Umbenennen", async () => {
       const nextName = window.prompt("Clip umbenennen", clip.name);
       if (!nextName || !nextName.trim()) return;
-      try { await renameClipFile(clip, nextName.trim()); persistClips(); renderLibrary(); renderRecent(); showToast("Clip umbenannt."); }
+      try { await renameClipFile(clip, nextName.trim()); persistClips(); renderLibrary(); showToast("Clip umbenannt."); }
       catch (error) { showToast(error.message); }
     });
     action("Löschen", async () => {
@@ -397,7 +383,8 @@ function renderLibrary() {
       removeClip(clip.id);
     }, "is-danger");
     more.append(summary, menu);
-    actions.append(play, more);
+    actions.append(more);
+    }
     body.append(heading, meta, actions);
     card.append(body);
     list.append(card);
@@ -405,6 +392,7 @@ function renderLibrary() {
 }
 
 function playClip(clip) {
+  if (clip.mediaUrl) { openCloudClip(clip); return; }
   if (!clip.file || !window.location.protocol.startsWith("http")) { showToast("Dieser Eintrag verweist auf keine lokale Videodatei."); return; }
   const dialog = $("playbackDialog");
   const video = $("playbackVideo");
@@ -448,12 +436,11 @@ function renameClip(id) {
   clip.name = nextName.trim();
   persistClips();
   renderLibrary();
-  renderRecent();
   showToast("Clip umbenannt.");
 }
 
-function removeClip(id) { state.clips = state.clips.filter((clip) => clip.id !== id); persistClips(); renderLibrary(); renderRecent(); updateClipCount(); showToast("Clip aus der Bibliothek entfernt."); }
-function updateClipCount() { $("clipCount").textContent = state.clips.length; }
+function removeClip(id) { state.clips = state.clips.filter((clip) => clip.id !== id); persistClips(); renderLibrary(); updateClipCount(); showToast("Clip aus der Bibliothek entfernt."); }
+function updateClipCount() { $("clipCount").textContent = state.cloudClips.length + state.clips.length; }
 
 function updateMetrics() {
   if (!state.metricsOn) return;
@@ -713,63 +700,23 @@ async function pollEngine() {
 async function pollBackendStatus() {
   if (state.backendCheckInFlight) return;
   state.backendCheckInFlight = true;
-  const indicator = $('serverIndicator');
-  const notice = $('backendNotice');
-  const retry = $('retryBackendButton');
-  indicator.dataset.state = 'checking';
-  notice.dataset.state = 'checking';
-  $('backendStatusSummary').textContent = 'Server wird geprüft';
-  $('backendNoticeTitle').textContent = 'Verbindung wird geprüft';
-  $('backendNoticeText').textContent = 'Clipfarm prüft den API-Endpunkt über HTTPS.';
-  $('accountGateStatus').lastElementChild.textContent = 'Serververbindung wird geprüft …';
-  retry.disabled = true;
   try {
     if (!window.clipfarmNative?.getBackendStatus) throw new Error('Der Serverstatus ist nur in der sicheren Electron-Oberfläche verfügbar.');
     const status = await window.clipfarmNative.getBackendStatus();
     state.backendStatus = status;
-    const available = Boolean(status.available);
-    const errorState = Boolean(status.basicAuthRequired);
-    indicator.dataset.state = available ? 'ready' : errorState ? 'error' : 'offline';
-    notice.dataset.state = available ? 'ready' : errorState ? 'error' : 'offline';
-    $('backendStatusDot').classList.toggle('is-error', !available);
-    $('backendStatusDot').classList.toggle('is-active', available);
-    $('backendStatusSummary').textContent = available ? 'Clipfarm-API verbunden' : errorState ? 'API-Zugriff gesperrt' : 'Server nicht erreichbar';
-    $('backendNoticeTitle').textContent = available ? 'Sichere Verbindung aktiv' : errorState ? 'API-Route verlangt noch HTTP-Basic-Auth' : 'Clipfarm-Server nicht erreichbar';
-    $('backendNoticeText').textContent = status.message;
-    $('cloudFeatureState').textContent = available ? 'API verbunden' : errorState ? 'Zugriff gesperrt' : 'Server offline';
-    $('accountGateDot').classList.toggle('is-active', available);
-    $('accountGateDot').classList.toggle('is-error', !available);
-    $('accountGateStatus').lastElementChild.textContent = available ? 'Sichere Verbindung zur Clipfarm-API aktiv.' : status.message;
-    if (available) {
-      if (state.account) await loadCommunityFeed();
-      else {
-        $('feedEmptyTitle').textContent = 'Melde dich an, um den Feed zu öffnen';
-        $('feedEmptyText').textContent = 'Hier erscheinen echte Uploads aus der Community, chronologisch nach Upload-Zeit sortiert.';
-        $('accountStatusLabel').textContent = 'Anmeldung erforderlich';
-      }
-    } else if (state.account) {
+    if (status.available && state.account && !state.feed.length) await loadCommunityFeed();
+    if (state.account && !status.available && !state.feed.length) {
       state.feedError = status.message;
       renderCommunityFeed();
     }
   } catch (error) {
     state.backendStatus = null;
-    indicator.dataset.state = 'offline';
-    notice.dataset.state = 'offline';
-    $('backendStatusDot').classList.remove('is-active');
-    $('backendStatusDot').classList.add('is-error');
-    $('backendStatusSummary').textContent = 'Serverstatus nicht verfügbar';
-    $('backendNoticeTitle').textContent = 'Backend-Status nicht verfügbar';
-    $('backendNoticeText').textContent = error.message;
-    $('accountGateDot').classList.add('is-error');
-    $('accountGateStatus').lastElementChild.textContent = error.message;
-    $('cloudFeatureState').textContent = 'Status nicht verfügbar';
-    if (state.account) {
+    if (state.account && !state.feed.length) {
       state.feedError = error.message;
       renderCommunityFeed();
     }
   } finally {
     state.backendCheckInFlight = false;
-    retry.disabled = false;
   }
 }
 function setAuthMode(mode) {
@@ -785,26 +732,168 @@ function setAuthMode(mode) {
   $('authError').hidden = true;
 }
 
+function paintSidebarAvatar(account) {
+  const avatar = $('sidebarAvatar');
+  if (!avatar) return;
+  avatar.replaceChildren();
+  if (account?.avatarUrl) {
+    const image = document.createElement('img');
+    image.src = account.avatarUrl;
+    image.alt = '';
+    image.loading = 'lazy';
+    image.decoding = 'async';
+    image.referrerPolicy = 'no-referrer';
+    avatar.append(image);
+  } else {
+    avatar.textContent = String(account?.displayName || account?.username || 'C').trim().charAt(0).toUpperCase() || 'C';
+  }
+}
+
+function renderProfile(profile) {
+  if (!profile) return;
+  $('profileUsername').textContent = '@' + (profile.username || state.account?.username || 'username');
+  $('profileDisplayName').value = profile.displayName || profile.username || '';
+  $('profileBio').value = profile.bio || '';
+  $('profileBioCount').textContent = String(($('profileBio').value || '').length);
+  const preview = $('profileAvatarPreview');
+  const fallback = $('profileAvatarFallback');
+  fallback.textContent = String(profile.displayName || profile.username || 'C').trim().charAt(0).toUpperCase() || 'C';
+  if (profile.avatarUrl) {
+    preview.src = profile.avatarUrl + (profile.avatarUrl.includes('?') ? '&' : '?') + 'v=' + Date.now();
+    preview.hidden = false;
+    fallback.hidden = true;
+  } else {
+    preview.removeAttribute('src');
+    preview.hidden = true;
+    fallback.hidden = false;
+  }
+  paintSidebarAvatar(profile);
+  $('accountStatusLabel').textContent = profile.displayName || profile.username;
+  $('accountStatusDetail').textContent = '@' + profile.username;
+  $('shareClipsSwitch').classList.toggle('is-on', profile.shareClips !== false);
+  $('shareClipsSwitch').setAttribute('aria-pressed', String(profile.shareClips !== false));
+  $('localOnlySwitch').classList.toggle('is-on', profile.localOnly === true);
+  $('localOnlySwitch').setAttribute('aria-pressed', String(profile.localOnly === true));
+}
+
+async function loadProfile() {
+  if (!state.account || !window.clipfarmNative?.getProfile) return;
+  $('profileSaveStatus').textContent = 'Profil wird geladen …';
+  try {
+    state.profile = await window.clipfarmNative.getProfile();
+    renderProfile(state.profile);
+    $('profileSaveStatus').textContent = '';
+    await syncDiskClips();
+  } catch (error) {
+    $('profileSaveStatus').textContent = error.message || 'Profil konnte nicht geladen werden.';
+  }
+}
+
+async function loadLibraryClips() {
+  if (!state.account || state.cloudLibraryLoading || !window.clipfarmNative?.getMyClips) return;
+  state.cloudLibraryLoading = true;
+  try {
+    const clips = [];
+    let cursor = null;
+    do {
+      const page = await window.clipfarmNative.getMyClips(cursor);
+      for (const item of page.clips || []) {
+        const when = new Date(item.uploadedAt);
+        clips.push({
+          id: item.id,
+          name: item.title || 'Spielmoment',
+          game: item.game || 'Unbekanntes Spiel',
+          uploadedAt: item.uploadedAt,
+          durationSeconds: item.durationSeconds,
+          sizeBytes: item.sizeBytes,
+          creator: item.creator,
+          mediaUrl: item.mediaUrl,
+          date: Number.isNaN(when.getTime()) ? '' : when.toLocaleString('de-DE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
+          cloud: true
+        });
+      }
+      cursor = page.nextCursor || null;
+    } while (cursor);
+    state.cloudClips = clips;
+  } catch (error) {
+    if (!state.cloudClips.length) showToast(error.message || 'Deine Online-Clips konnten nicht geladen werden.');
+  } finally {
+    state.cloudLibraryLoading = false;
+    renderLibrary();
+    updateClipCount();
+  }
+}
+
+async function saveProfile() {
+  if (!state.profile || !window.clipfarmNative?.updateProfile) return;
+  const button = $('saveProfileButton');
+  const status = $('profileSaveStatus');
+  button.disabled = true;
+  status.textContent = 'Änderungen werden gespeichert …';
+  const update = {
+    displayName: $('profileDisplayName').value.trim(),
+    bio: $('profileBio').value.trim(),
+    shareClips: state.profile.shareClips !== false,
+    localOnly: state.profile.localOnly === true
+  };
+  if (state.pendingAvatarData !== undefined) update.avatarData = state.pendingAvatarData;
+  try {
+    state.profile = await window.clipfarmNative.updateProfile(update);
+    state.pendingAvatarData = undefined;
+    renderProfile(state.profile);
+    status.textContent = 'Profil gespeichert.';
+    await loadCommunityFeed();
+    await loadLibraryClips();
+  } catch (error) {
+    status.textContent = error.message || 'Das Profil konnte nicht gespeichert werden.';
+  } finally { button.disabled = false; }
+}
+
+async function savePrivacySettings() {
+  if (!state.profile || !window.clipfarmNative?.updateProfile) return;
+  const status = $('privacySaveStatus');
+  const buttons = [$('shareClipsSwitch'), $('localOnlySwitch')];
+  buttons.forEach((button) => { button.disabled = true; });
+  status.textContent = 'Datenschutzeinstellungen werden gespeichert …';
+  try {
+    state.profile = await window.clipfarmNative.updateProfile({
+      displayName: state.profile.displayName || state.profile.username,
+      bio: state.profile.bio || '',
+      shareClips: $('shareClipsSwitch').classList.contains('is-on'),
+      localOnly: $('localOnlySwitch').classList.contains('is-on')
+    });
+    renderProfile(state.profile);
+    status.textContent = 'Einstellungen gespeichert.';
+    await loadCommunityFeed();
+    if (state.profile.localOnly) await syncDiskClips();
+  } catch (error) {
+    status.textContent = error.message || 'Einstellungen konnten nicht gespeichert werden.';
+    renderProfile(state.profile);
+  } finally { buttons.forEach((button) => { button.disabled = false; }); }
+}
+
 function applyAccount(user, loadFeed = true) {
-  state.account = user && typeof user.username === 'string' ? { id: user.id, username: user.username } : null;
+  state.account = user && typeof user.username === 'string' ? { id: user.id, username: user.username, displayName: user.displayName || user.username, avatarUrl: user.avatarUrl || null } : null;
   const signedIn = Boolean(state.account);
   $('accountGate').hidden = signedIn;
   $('appShell').hidden = !signedIn;
   $('logoutButton').hidden = !signedIn;
-  $('accountName').textContent = signedIn ? state.account.username : 'Nicht angemeldet';
-  $('accountCaption').textContent = signedIn ? 'Sitzung sicher gespeichert' : 'Anmeldung erforderlich';
-  $('accountStatusLabel').textContent = signedIn ? 'Angemeldet' : 'Anmeldung erforderlich';
-  const statusDetail = $('accountStatusDetail');
-  if (statusDetail) statusDetail.textContent = signedIn ? 'Clipfarm-Konto' : 'Sichere Konto-API';
+  $('accountStatusLabel').textContent = signedIn ? state.account.displayName : 'Nicht angemeldet';
+  $('accountStatusDetail').textContent = signedIn ? '@' + state.account.username : 'Mein Profil';
+  paintSidebarAvatar(state.account);
+  $('profileUsername').textContent = signedIn ? '@' + state.account.username : '@username';
   if (!signedIn) {
+    state.profile = null;
+    state.cloudClips = [];
     state.feed = [];
     state.feedCursor = null;
     state.feedHasMore = false;
     state.feedError = '';
     renderCommunityFeed();
+    renderLibrary();
     $('authUsername').focus();
   } else {
-    $('cloudFeatureState').textContent = state.backendStatus?.available ? 'API verbunden' : 'Verbindung wird geprüft';
+    if (loadFeed) loadProfile();
     if (loadFeed) loadCommunityFeed();
   }
 }
@@ -824,7 +913,10 @@ async function initializeAccount() {
   }
   await refreshUploadQueue();
   pollBackendStatus();
-  if (state.account) loadCommunityFeed();
+  if (state.account) {
+    await loadProfile();
+    loadCommunityFeed();
+  }
 }
 
 async function submitAccount(event) {
@@ -846,6 +938,7 @@ async function submitAccount(event) {
     applyAccount(account, false);
     showToast(state.authMode === 'register' ? 'Dein Konto ist bereit.' : 'Du bist angemeldet.');
     await refreshUploadQueue();
+    await loadProfile();
     await loadCommunityFeed();
   } catch (error) {
     errorNode.textContent = error.message || 'Die Anmeldung ist fehlgeschlagen.';
@@ -886,23 +979,51 @@ function renderCommunityFeed() {
 
     const copy = document.createElement('div');
     copy.className = 'cloud-clip-copy';
+    const author = document.createElement('div');
+    author.className = 'cloud-clip-author';
+    const avatar = document.createElement('span');
+    avatar.className = 'cloud-clip-avatar';
+    const avatarLabel = String(clip.creator || clip.creatorUsername || '?').trim().charAt(0).toUpperCase() || '?';
+    const expectedOrigin = state.backendStatus?.origin || 'https://benni-projects.de';
+    try {
+      const avatarUrl = new URL(clip.creatorAvatarUrl);
+      if (avatarUrl.origin === expectedOrigin) {
+        const image = document.createElement('img');
+        image.src = avatarUrl.href;
+        image.alt = '';
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        image.referrerPolicy = 'no-referrer';
+        image.addEventListener('error', () => { avatar.replaceChildren(); avatar.textContent = avatarLabel; }, { once: true });
+        avatar.append(image);
+      } else avatar.textContent = avatarLabel;
+    } catch { avatar.textContent = avatarLabel; }
+    const authorCopy = document.createElement('div');
+    authorCopy.className = 'cloud-clip-author-copy';
+    const creator = document.createElement('strong');
+    creator.textContent = clip.creator || 'Unbekannter Spieler';
+    const handle = document.createElement('span');
+    handle.textContent = '@' + (clip.creatorUsername || clip.creator || 'unbekannt');
+    authorCopy.append(creator, handle);
+    author.append(avatar, authorCopy);
     const title = document.createElement('h3');
     title.textContent = clip.title || 'Spielmoment';
     const byline = document.createElement('div');
     byline.className = 'cloud-clip-byline';
-    const creator = document.createElement('strong');
-    creator.textContent = '@' + (clip.creator || 'unbekannt');
     const uploaded = document.createElement('time');
     uploaded.dateTime = clip.uploadedAt || '';
     const date = new Date(clip.uploadedAt);
     uploaded.textContent = Number.isNaN(date.getTime()) ? 'Upload-Zeit unbekannt' : 'Hochgeladen ' + date.toLocaleString('de-DE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-    const size = document.createElement('span');
-    size.textContent = Number.isFinite(Number(clip.sizeBytes)) ? (Number(clip.sizeBytes) / 1048576).toFixed(1).replace('.', ',') + ' MB' : '';
-    byline.append(creator, uploaded);
-    if (size.textContent) byline.append(size);
+    byline.append(uploaded);
     const details = document.createElement('p');
-    details.textContent = 'Community-Clip · ' + (clip.game || 'Unbekanntes Spiel') + ' · ' + formatDuration(clip.durationSeconds);
-    copy.append(title, byline, details);
+    const gameTag = document.createElement('span');
+    gameTag.className = 'cloud-clip-game-tag';
+    gameTag.textContent = clip.game || 'Unbekanntes Spiel';
+    const durationTag = document.createElement('span');
+    durationTag.className = 'cloud-clip-duration-tag';
+    durationTag.textContent = formatDuration(clip.durationSeconds);
+    details.append(gameTag, durationTag);
+    copy.append(author, title, byline, details);
     article.append(play, copy);
     list.append(article);
   }
@@ -915,11 +1036,12 @@ function renderCommunityFeed() {
   if (state.feed.length === 0 && !state.feedError) {
     $('feedEmptyTitle').textContent = state.account ? 'Noch keine Clips im Feed' : 'Melde dich an, um den Feed zu öffnen';
     $('feedEmptyText').textContent = state.account
-      ? 'Sobald du oder andere Spieler Clips hochladen, erscheinen sie hier in zeitlicher Reihenfolge.'
-      : 'Hier erscheinen echte Uploads aus der Community, chronologisch nach Upload-Zeit sortiert.';
+      ? 'Sobald Spieler Clips hochladen, erscheinen sie hier. Der Name neben jedem Clip zeigt, wer ihn aufgenommen hat.'
+      : 'Melde dich an, damit du Spielmomente aus der Community ansehen kannst.';
   }
   $('loadMoreClipsButton').hidden = !state.feedHasMore || !state.account;
   $('loadMoreClipsButton').disabled = state.feedLoading;
+  $('refreshFeedButton').disabled = state.feedLoading;
 }
 
 async function loadCommunityFeed(append = false) {
@@ -955,6 +1077,7 @@ function openCloudClip(clip) {
   $('playbackKind').textContent = 'COMMUNITY-CLIP';
   $('playbackTitle').textContent = clip.title || 'Spielmoment';
   const video = $('playbackVideo');
+  video.preload = 'none';
   video.src = clip.mediaUrl;
   $('playbackDialog').showModal();
   video.play().catch(() => showToast('Clip konnte nicht gestartet werden.'));
@@ -1039,10 +1162,12 @@ function handleUploadCommitted(result) {
   if (result?.localFile) {
     state.clips = state.clips.filter((clip) => clip.file !== result.localFile);
     persistClips();
-    renderRecent();
     renderLibrary();
     updateClipCount();
   }
+  state.cloudLibraryLoading = false;
+  loadLibraryClips();
+  loadCommunityFeed();
   if (result?.cleanupWarning) showToast(result.cleanupWarning);
   else showToast('Clip erfolgreich hochgeladen und aus der lokalen Arbeitskopie entfernt.');
 }
@@ -1059,6 +1184,7 @@ async function signOut() {
 }
 async function syncDiskClips() {
   if (!window.location.protocol.startsWith("http")) return;
+  if (state.profile && !state.profile.localOnly) return;
   try {
     const response = await fetch("/api/clips", { cache: "no-store" });
     if (!response.ok) throw new Error("clip library unavailable");
@@ -1078,7 +1204,6 @@ async function syncDiskClips() {
     }));
     state.clips = [...diskClips, ...state.clips.filter((clip) => !clip.file)];
     persistClips();
-    renderRecent();
     updateClipCount();
     if (state.activeView === "library") renderLibrary();
   } catch { /* localStorage remains the offline fallback */ }
@@ -1119,7 +1244,7 @@ document.querySelectorAll("[data-view-link]").forEach((link) => link.addEventLis
 $("goToSessionButton").addEventListener("click", () => setView("session"));
 $("openSessionButton").addEventListener("click", () => setView("session"));
 $("emptySessionButton").addEventListener("click", () => {
-  if (!state.clips.length) { setView("session"); return; }
+  if (!state.clips.length && !state.cloudClips.length) { setView("session"); return; }
   $("clipSearch").value = "";
   state.filter = "all";
   document.querySelectorAll(".filter-button").forEach((button) => {
@@ -1129,11 +1254,58 @@ $("emptySessionButton").addEventListener("click", () => {
   });
   renderLibrary();
 });
-$("retryBackendButton").addEventListener("click", pollBackendStatus);
 $("accountForm").addEventListener("submit", submitAccount);
 $("loginModeButton").addEventListener("click", () => setAuthMode("login"));
 $("registerModeButton").addEventListener("click", () => setAuthMode("register"));
 $("logoutButton").addEventListener("click", signOut);
+$("profileButton").addEventListener("click", () => setView("profile"));
+$("profileForm").addEventListener("submit", (event) => { event.preventDefault(); saveProfile(); });
+$("passwordForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const currentPassword = $("currentPasswordInput").value;
+  const newPassword = $("newPasswordInput").value;
+  const status = $("passwordSaveStatus");
+  const button = $("savePasswordButton");
+  if (newPassword !== $("confirmPasswordInput").value) { status.textContent = "Die neuen Passwörter stimmen nicht überein."; return; }
+  if (!window.clipfarmNative?.changePassword) { status.textContent = "Passwortänderung ist nicht verfügbar."; return; }
+  button.disabled = true;
+  status.textContent = "Passwort wird geändert …";
+  try {
+    await window.clipfarmNative.changePassword(currentPassword, newPassword);
+    $("passwordForm").reset();
+    status.textContent = "Passwort geändert.";
+  } catch (error) { status.textContent = error.message || "Passwort konnte nicht geändert werden."; }
+  finally { button.disabled = false; }
+});
+$("profileBio").addEventListener("input", () => { $("profileBioCount").textContent = String($("profileBio").value.length); });
+$("profileAvatarInput").addEventListener("change", () => {
+  const file = $("profileAvatarInput").files?.[0];
+  if (!file) return;
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 1_500_000) {
+    $("profileSaveStatus").textContent = "Bitte wähle ein PNG-, JPG- oder WebP-Bild bis 1,5 MB.";
+    $("profileAvatarInput").value = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.addEventListener("load", () => {
+    state.pendingAvatarData = String(reader.result || "");
+    $("profileAvatarPreview").src = state.pendingAvatarData;
+    $("profileAvatarPreview").hidden = false;
+    $("profileAvatarFallback").hidden = true;
+    $("profileSaveStatus").textContent = "Bild bereit. Speichere dein Profil, um es zu übernehmen.";
+  });
+  reader.readAsDataURL(file);
+});
+$("clearProfileAvatarButton").addEventListener("click", () => {
+  state.pendingAvatarData = null;
+  $("profileAvatarPreview").removeAttribute("src");
+  $("profileAvatarPreview").hidden = true;
+  $("profileAvatarFallback").hidden = false;
+  $("profileAvatarInput").value = "";
+});
+$("shareClipsSwitch").addEventListener("click", () => { toggleSwitch($("shareClipsSwitch")); savePrivacySettings(); });
+$("localOnlySwitch").addEventListener("click", () => { toggleSwitch($("localOnlySwitch")); savePrivacySettings(); });
+$("refreshFeedButton").addEventListener("click", () => loadCommunityFeed());
 $("loadMoreClipsButton").addEventListener("click", () => loadCommunityFeed(true));
 $("saveClipButton").addEventListener("click", saveClip);
 $("toggleReplayButton").addEventListener("click", () => setEngine(!(state.engineLive || state.autoStartPending)));
@@ -1142,7 +1314,6 @@ $("gameAudioSwitch").addEventListener("click", () => updateEngineConfig("gameAud
 $("gameAudioSettingsSwitch").addEventListener("click", () => updateEngineConfig("gameAudio", !$("gameAudioSettingsSwitch").classList.contains("is-on")));
 $("separateTracksSwitch").addEventListener("click", () => updateEngineConfig("separateTracks", !$("separateTracksSwitch").classList.contains("is-on")));
 $("metricsToggle").addEventListener("click", () => { state.metricsOn = !state.metricsOn; $("metricGrid").hidden = !state.metricsOn; $("metricsToggle").textContent = state.metricsOn ? "Ausblenden" : "Einblenden"; });
-$("openLibraryButton").addEventListener("click", () => setView("library"));
 $("openSettingsButton").addEventListener("click", () => setView("settings"));
 $("clipSearch").addEventListener("input", renderLibrary);
 $("replayLengthSelect").addEventListener("change", (event) => updateEngineConfig("replayLength", Number(event.target.value)));
@@ -1222,6 +1393,8 @@ function renderAppInfo(info) {
   const status = $("appInfoUpdateStatus");
   status.textContent = statusLabels[info.updateStatus] || "Status wird geprüft";
   status.dataset.state = info.updateStatus || "unknown";
+  $("availableUpdate").hidden = info.updateStatus !== "available";
+  if (info.updateStatus === "available") $("availableUpdateText").textContent = `Clipfarm ${info.latestVersion} ist bereit zur Installation.`;
   if (info.updateError) status.title = info.updateError;
   else status.removeAttribute("title");
 }
@@ -1256,6 +1429,43 @@ checkForUpdatesButton?.addEventListener("click", async () => {
     label.textContent = previousLabel;
   }
 });
+$('installUpdateButton').addEventListener('click', async () => {
+  const button = $('installUpdateButton');
+  button.disabled = true;
+  button.textContent = 'Updater startet …';
+  try {
+    const info = await window.clipfarmNative.installUpdate();
+    renderAppInfo(info);
+  } catch (error) {
+    $('appInfoUpdateStatus').textContent = error.message || 'Das Update konnte nicht installiert werden.';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Installieren';
+  }
+});
+async function loadAutostartSetting() {
+  if (!window.clipfarmNative?.getAutostart) return;
+  try {
+    const setting = await window.clipfarmNative.getAutostart();
+    $('autostartSwitch').checked = Boolean(setting.enabled);
+    $('autostartSwitch').disabled = !setting.supported;
+  } catch { $('autostartSwitch').disabled = true; }
+}
+$('autostartSwitch').addEventListener('change', async () => {
+  const control = $('autostartSwitch');
+  control.disabled = true;
+  try {
+    const setting = await window.clipfarmNative.setAutostart(control.checked);
+    control.checked = Boolean(setting.enabled);
+    control.disabled = !setting.supported;
+    showToast(setting.enabled ? 'Clipfarm startet künftig mit Windows im Hintergrund.' : 'Clipfarm startet nicht mehr automatisch mit Windows.');
+  } catch (error) {
+    control.checked = !control.checked;
+    control.disabled = false;
+    showToast(error.message || 'Autostart-Einstellung konnte nicht gespeichert werden.');
+  }
+});
+loadAutostartSetting();
 loadAppInfo();
 document.querySelectorAll(".settings-list .switch:not(#microphoneSettingSwitch):not(#backgroundPrioritySwitch):not(#gameAudioSettingsSwitch):not(#separateTracksSwitch)").forEach((button) => button.addEventListener("click", () => toggleSwitch(button)));
 $("microphoneSettingSwitch").addEventListener("click", toggleMicrophone);
@@ -1289,6 +1499,8 @@ document.addEventListener("keydown", async (event) => {
 
 window.clipfarmNative?.onStartupError((message) => showToast(message));
 window.clipfarmNative?.onClipOutcome((result) => playClipOutcome(result.outcome === "success", { notifyOverlay: false, message: result.message }));
+window.clipfarmNative?.onUpdateAvailable((info) => { renderAppInfo(info); });
+window.clipfarmNative?.onUpdateState((info) => { renderAppInfo(info); });
 window.clipfarmNative?.onUploadUpdate(handleUploadUpdate);
 window.clipfarmNative?.onUploadCommitted(handleUploadCommitted);
 window.clipfarmNative?.onAccountUpdate((user) => {
@@ -1297,16 +1509,23 @@ window.clipfarmNative?.onAccountUpdate((user) => {
   } else if (state.account?.id !== user.id) {
     applyAccount(user);
   } else {
-    state.account = { id: user.id, username: user.username };
-    $("accountName").textContent = user.username;
+    state.account = { id: user.id, username: user.username, displayName: user.displayName || user.username, avatarUrl: user.avatarUrl || null };
+    paintSidebarAvatar(state.account);
+    $("accountStatusLabel").textContent = state.account.displayName;
+    $("accountStatusDetail").textContent = '@' + state.account.username;
+    if (state.profile) {
+      state.profile.displayName = state.account.displayName;
+      state.profile.avatarUrl = state.account.avatarUrl;
+      if (state.activeView === 'profile') renderProfile(state.profile);
+    }
   }
 });
 
 function startUiPolling() {
   if (state.uiPolling) return;
   state.uiPolling = true;
-  pollLiveMetrics(); pollSession(); pollEngine(); pollAudioDevices(); syncDiskClips(); pollBackendStatus();
-  state.uiTimers = [setInterval(pollLiveMetrics, 4000), setInterval(pollSession, 5000), setInterval(pollEngine, 2000), setInterval(pollAudioDevices, 30000), setInterval(syncDiskClips, 8000), setInterval(pollBackendStatus, 60000)];
+  pollLiveMetrics(); pollSession(); pollEngine(); pollAudioDevices(); pollBackendStatus();
+  state.uiTimers = [setInterval(pollLiveMetrics, 4000), setInterval(pollSession, 5000), setInterval(pollEngine, 2000), setInterval(pollAudioDevices, 30000), setInterval(pollBackendStatus, 60000)];
 }
 
 function stopUiPolling() {
@@ -1318,7 +1537,7 @@ function stopUiPolling() {
 setAuthMode("login");
 renderCommunityFeed();
 renderUploadQueue();
-renderRecent(); renderLibrary(); updateClipCount(); updateReplayUI(); updateMetrics();
+renderLibrary(); updateClipCount(); updateReplayUI(); updateMetrics();
 initializeAccount();
 document.addEventListener("visibilitychange", () => { if (document.hidden) stopUiPolling(); else startUiPolling(); });
 if (!document.hidden) startUiPolling();

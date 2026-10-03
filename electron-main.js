@@ -42,7 +42,11 @@ let uploadQueue = new Map();
 let uploadWorkers = new Set();
 let uploadRetryTimer = null;
 let community = null;
+let updateMonitorTimer = null;
+let updatePromptPromise = null;
+let promptedUpdateVersion = null;
 const latestReleaseUrl = "https://api.github.com/repos/testaccount2109/clipfarm/releases/latest";
+const startedHidden = process.argv.includes("--hidden");
 let updateState = {
   status: app.isPackaged && process.platform === "win32" ? "checking" : "development",
   latestVersion: null,
@@ -167,13 +171,6 @@ async function checkForUpdates() {
       if (!assetNames.has(archiveName) || !assetNames.has(`${archiveName}.sha256`)) {
         updateState.status = "updater-error";
         updateState.error = "Das neueste GitHub-Release enthält kein vollständiges Clipfarm-Updatepaket.";
-        return getAppInfo();
-      }
-      try {
-        await launchBundledUpdater();
-      } catch (error) {
-        updateState.status = "updater-error";
-        updateState.error = error.message;
       }
     }
     return getAppInfo();
@@ -181,6 +178,80 @@ async function checkForUpdates() {
     updateState.status = "unavailable";
     updateState.error = error.message;
     return getAppInfo();
+  }
+}
+
+async function installAvailableUpdate() {
+  if (updateState.status !== "available" || !updateState.latestVersion) throw new Error("Es ist kein installierbares Update verfügbar.");
+  await launchBundledUpdater();
+  return getAppInfo();
+}
+
+async function promptForUpdate(info) {
+  if (info.updateStatus !== "available" || promptedUpdateVersion === info.latestVersion || updatePromptPromise) return;
+  promptedUpdateVersion = info.latestVersion;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("clipfarm:update:available", info);
+  updatePromptPromise = (async () => {
+    const options = {
+      type: "info",
+      title: "Clipfarm-Update verfügbar",
+      message: `Clipfarm ${info.latestVersion} kann installiert werden.`,
+      detail: "Deine Clips und Einstellungen bleiben erhalten. Clipfarm wird für die Installation neu gestartet.",
+      buttons: ["Jetzt installieren", "Später"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    };
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+    if (result.response === 0) await installAvailableUpdate();
+  })().catch((error) => {
+    updateState = { ...updateState, status: "updater-error", error: error.message };
+  }).finally(() => { updatePromptPromise = null; });
+  await updatePromptPromise;
+}
+
+function startUpdateMonitor() {
+  if (!app.isPackaged || process.platform !== "win32") return;
+  const check = async () => {
+    const info = await checkForUpdates();
+    await promptForUpdate(info);
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("clipfarm:update:state", getAppInfo());
+    }
+  };
+  check().catch(() => {});
+  clearInterval(updateMonitorTimer);
+  updateMonitorTimer = setInterval(() => check().catch(() => {}), 5 * 60 * 1000);
+  updateMonitorTimer.unref?.();
+}
+
+function getAutostartEnabled() {
+  if (process.platform !== "win32" || !app.isPackaged) return false;
+  const preferencePath = path.join(app.getPath("userData"), "startup-preference.json");
+  try {
+    const preference = JSON.parse(fs.readFileSync(preferencePath, "utf8"));
+    return preference.enabled !== false;
+  } catch { return true; }
+}
+
+function setAutostartEnabled(enabled) {
+  if (process.platform !== "win32" || !app.isPackaged) return false;
+  const preferencePath = path.join(app.getPath("userData"), "startup-preference.json");
+  fs.mkdirSync(path.dirname(preferencePath), { recursive: true });
+  fs.writeFileSync(preferencePath, JSON.stringify({ enabled: Boolean(enabled) }), "utf8");
+  app.setLoginItemSettings({ openAtLogin: Boolean(enabled), path: process.execPath, args: ["--hidden"] });
+  return Boolean(enabled);
+}
+
+function ensureDefaultAutostart() {
+  if (process.platform !== "win32" || !app.isPackaged) return;
+  const enabled = getAutostartEnabled();
+  if (enabled && !app.getLoginItemSettings().openAtLogin) {
+    app.setLoginItemSettings({ openAtLogin: true, path: process.execPath, args: ["--hidden"] });
+  } else if (!enabled && app.getLoginItemSettings().openAtLogin) {
+    app.setLoginItemSettings({ openAtLogin: false });
   }
 }
 
@@ -300,6 +371,32 @@ function prepareUserData() {
   process.env.CLIPFARM_AUDIO_HELPER = app.isPackaged
     ? path.join(process.resourcesPath, "clipfarm-audio.exe")
     : path.join(productRoot, "tools", "clipfarm-audio.exe");
+}
+
+async function clearLegacyOfflineClipsOnce() {
+  const markerPath = path.join(app.getPath("userData"), "cloud-media-migration-v1.done");
+  if (fs.existsSync(markerPath)) return;
+  const config = await api("/api/config");
+  const configuredDirectory = String(config.config?.clipDirectory || "");
+  if (!path.isAbsolute(configuredDirectory)) {
+    throw new Error("Der Clip-Ordner konnte für die einmalige Cloud-Migration nicht sicher bestimmt werden.");
+  }
+  const clipDirectory = path.resolve(configuredDirectory);
+  if (clipDirectory === path.parse(clipDirectory).root) throw new Error("Der Clip-Ordner darf nicht auf einem Laufwerksstamm liegen.");
+  await fs.promises.mkdir(clipDirectory, { recursive: true });
+  for (const entry of await fs.promises.readdir(clipDirectory, { withFileTypes: true })) {
+    if (!entry.name.toLowerCase().endsWith(".mp4")) continue;
+    const target = path.join(clipDirectory, entry.name);
+    try {
+      const info = await fs.promises.lstat(target);
+      if (info.isFile() || info.isSymbolicLink()) await fs.promises.rm(target, { force: true });
+    } catch { /* A clip removed by another cleanup can be ignored. */ }
+  }
+  await fs.promises.rm(path.join(clipDirectory, ".thumbs"), { recursive: true, force: true });
+  await fs.promises.rm(pendingUploadDirectory, { recursive: true, force: true });
+  await fs.promises.mkdir(pendingUploadDirectory, { recursive: true });
+  await fs.promises.rm(uploadManifestPath, { force: true });
+  await fs.promises.writeFile(markerPath, new Date().toISOString(), { flag: "wx" });
 }
 
 function toElectronAccelerator(specification) {
@@ -480,17 +577,24 @@ async function saveReplay() {
   clipSaveInFlight = true;
   showClipOutcomeOverlay({ outcome: "saving", message: "2 Sekunden Nachlauf – Clip wird gesichert." });
   try {
+    if (!community) throw new Error("Clipfarm wird noch gestartet.");
+    const account = await community.getAccount();
+    if (!account.user) throw new Error("Melde dich in Clipfarm an, bevor du einen Clip sicherst.");
+    const profile = await community.getProfile();
     const [settings, session] = await Promise.all([api("/api/config"), api("/api/session")]);
+    const uploadId = profile.localOnly ? null : crypto.randomUUID();
     const result = await api("/api/clip/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seconds: settings.config.replayLength, game: session.game || "Game" })
+      body: JSON.stringify({ seconds: settings.config.replayLength, game: session.game || "Game", uploadId })
     });
-    if (community) {
-      try { await community.queueClip(result.clip, true); }
-      catch (uploadError) { notify("Clipfarm-Upload", uploadError.message); }
+    if (profile.localOnly) {
+      reportClipOutcome("success", "Nur lokal gespeichert · " + path.basename(result.clip.file));
+      return { ...result, localOnly: true };
     }
-    reportClipOutcome("success", path.basename(result.clip.file));
+    const queued = await community.queueClip(result.clip, true);
+    reportClipOutcome("success", "Upload gestartet · " + (result.clip.name || "Clip"));
+    return { ...result, localOnly: false, upload: queued };
   } catch (error) {
     reportClipOutcome("failed", error.message);
     throw error;
@@ -623,9 +727,12 @@ function createMainWindow() {
   mainWindow.on("close", (event) => {
     if (!closing) {
       event.preventDefault();
-      mainWindow.hide();
+      const window = mainWindow;
+      mainWindow = null;
+      window.destroy();
     }
   });
+  mainWindow.once("closed", () => { if (mainWindow?.isDestroyed()) mainWindow = null; });
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
     if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
@@ -650,6 +757,18 @@ ipcMain.handle("clipfarm:app:info", (event) => {
 ipcMain.handle("clipfarm:update:check", async (event) => {
   if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
   return checkForUpdates();
+});
+ipcMain.handle("clipfarm:update:install", async (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return installAvailableUpdate();
+});
+ipcMain.handle("clipfarm:startup:get", (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return { enabled: getAutostartEnabled(), supported: app.isPackaged && process.platform === "win32" };
+});
+ipcMain.handle("clipfarm:startup:set", (event, enabled) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return { enabled: setAutostartEnabled(enabled), supported: app.isPackaged && process.platform === "win32" };
 });
 ipcMain.handle("clipfarm:backend:status", async (event) => {
   if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
@@ -678,6 +797,30 @@ ipcMain.handle("clipfarm:feed:get", async (event, cursor) => {
   if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
   if (!community) throw new Error("Die Konto-API wird noch gestartet.");
   return community.getFeed(cursor === undefined ? null : cursor);
+});
+ipcMain.handle("clipfarm:clips:mine", async (event, cursor) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community) throw new Error("Clipfarm wird noch gestartet.");
+  return community.getMyClips(cursor === undefined ? null : cursor);
+});
+ipcMain.handle("clipfarm:profile:get", async (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community) throw new Error("Clipfarm wird noch gestartet.");
+  return community.getProfile();
+});
+ipcMain.handle("clipfarm:profile:update", async (event, profile) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community) throw new Error("Clipfarm wird noch gestartet.");
+  return community.updateProfile(profile);
+});
+ipcMain.handle("clipfarm:profile:password", async (event, currentPassword, newPassword) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  if (!community) throw new Error("Clipfarm wird noch gestartet.");
+  return community.changePassword(currentPassword, newPassword);
+});
+ipcMain.handle("clipfarm:clip:save", async (event) => {
+  if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
+  return saveReplay();
 });
 ipcMain.handle("clipfarm:upload:list", (event) => {
   if (!isTrustedRenderer(event)) throw new Error("Nicht vertrauenswürdiger Renderer.");
@@ -728,14 +871,16 @@ ipcMain.handle("clipfarm:game-icon", async (event, requestedProcessId) => {
 });
 
 async function startClipfarm() {
-  if (!splashWindow) createSplashWindow();
+  if (!startedHidden && !splashWindow) createSplashWindow();
   prepareUserData();
   localHost = require("./server.js");
   const port = await localHost.startServer(0);
   baseUrl = `http://127.0.0.1:${port}`;
+  await clearLegacyOfflineClipsOnce();
   community = new CommunityService({
     safeStorage,
     sessionPath: sessionStorePath,
+    profileCachePath: path.join(app.getPath("userData"), "profile-cache.json"),
     stagingDirectory: pendingUploadDirectory,
     getClipDirectory: async () => {
       const config = await api("/api/config");
@@ -778,7 +923,7 @@ async function startClipfarm() {
   }
 
   createTray();
-  createMainWindow();
+  if (!startedHidden) createMainWindow();
 }
 
 async function stopClipfarm() {
@@ -798,12 +943,9 @@ async function stopClipfarm() {
 if (hasSingleInstance) {
   app.on("second-instance", openMainWindow);
   app.whenReady().then(async () => {
-    if (app.isPackaged && process.platform === "win32") {
-      createSplashWindow();
-      const update = await checkForUpdates();
-      if (update.updateStatus === "installing") return;
-    }
+    ensureDefaultAutostart();
     await startClipfarm();
+    startUpdateMonitor();
   }).catch(async (error) => {
     dialog.showErrorBox("clipfarm konnte nicht gestartet werden", error.message);
     await stopClipfarm().catch(() => {});
@@ -815,6 +957,7 @@ if (hasSingleInstance) {
     event.preventDefault();
     if (shutdownPromise) return;
     closing = true;
+    clearInterval(updateMonitorTimer);
     shutdownPromise = stopClipfarm().finally(() => app.quit());
   });
 }
