@@ -3,11 +3,15 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const net = require("node:net");
+const crypto = require("node:crypto");
 const { execFile, spawn } = require("node:child_process");
+const { Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 
 const root = __dirname;
 const port = Number(process.env.CLIPFARM_PORT || 4174);
 const dataDirectory = path.resolve(process.env.SPOOL_DATA_DIR || root);
+const captureRuntimeDirectory = path.join(process.env.LOCALAPPDATA || (process.env.SPOOL_DATA_DIR ? dataDirectory : os.tmpdir()), "Clipfarm", "capture-runtime");
 const stagingDirectory = path.resolve(process.env.CLIPFARM_STAGING_DIR || path.join(dataDirectory, "pending-uploads"));
 const audioControlPort = Number(process.env.CLIPFARM_AUDIO_CONTROL_PORT || 0);
 const CLIP_POSTROLL_SECONDS = 2;
@@ -124,6 +128,8 @@ let captureState = { state: "stopped", pid: null, encoder: null, captureMethod: 
 let engineWorkingSetBytes = 0;
 let engineCpuPercent = null;
 let previousEngineCpu = null;
+let ffmpegRuntimePromise = null;
+const encoderProbeCache = new Map();
 let gpuPercent = null;
 let gpuAvailable = false;
 let gpuSource = "Windows GPU Engine counter";
@@ -339,6 +345,8 @@ function findFfmpeg() {
   if (process.env.CLIPFARM_FFMPEG && fs.existsSync(process.env.CLIPFARM_FFMPEG)) return process.env.CLIPFARM_FFMPEG;
   const bundled = path.join(root, "tools", "ffmpeg.exe");
   if (fs.existsSync(bundled)) return bundled;
+  const managed = path.join(captureRuntimeDirectory, "ffmpeg", "bin", "ffmpeg.exe");
+  if (fs.existsSync(managed)) return managed;
   const localAppData = process.env.LOCALAPPDATA;
   if (localAppData) {
     const packageRoot = path.join(localAppData, "Microsoft", "WinGet", "Packages");
@@ -411,6 +419,224 @@ function findFile(directory, filename, depth) {
     }
   }
   return null;
+}
+
+function runCaptureTool(file, args, timeout = 20000) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(String(stderr || error.message || "Das Aufnahmeprogramm konnte nicht gestartet werden.").trim().slice(-1200)));
+        return;
+      }
+      resolve(`${stdout || ""}\n${stderr || ""}`);
+    });
+  });
+}
+
+async function inspectFfmpeg(ffmpeg) {
+  const [filters, encoders, formats] = await Promise.all([
+    runCaptureTool(ffmpeg, ["-hide_banner", "-filters"]),
+    runCaptureTool(ffmpeg, ["-hide_banner", "-encoders"]),
+    runCaptureTool(ffmpeg, ["-hide_banner", "-muxers"])
+  ]);
+  const missing = [];
+  if (!/\bgfxcapture\b/i.test(filters)) missing.push("gfxcapture (Windows-Bildschirmaufnahme)");
+  if (!/\blibx264\b/i.test(encoders)) missing.push("libx264 (CPU-Notfall-Encoder)");
+  if (!/\baac\b/i.test(encoders)) missing.push("AAC-Audioencoder");
+  if (!/\bmp4\b/i.test(formats)) missing.push("MP4-Ausgabeformat");
+  const ffprobe = path.join(path.dirname(ffmpeg), "ffprobe.exe");
+  try {
+    await runCaptureTool(fs.existsSync(ffprobe) ? ffprobe : "ffprobe.exe", ["-version"]);
+  } catch {
+    missing.push("FFprobe");
+  }
+  if (missing.length) throw new Error(`FFmpeg kann Clipfarm-Aufnahmen nicht erstellen. Es fehlen: ${missing.join(", ")}.`);
+  return { ffmpeg, encoders };
+}
+
+function openFfmpegDownload(address, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try { url = new URL(address); }
+    catch { reject(new Error("Die FFmpeg-Downloadadresse ist ungültig.")); return; }
+    if (url.protocol !== "https:" || url.port || !["www.gyan.dev", "gyan.dev"].includes(url.hostname)) {
+      reject(new Error("Der FFmpeg-Download wurde aus Sicherheitsgründen abgebrochen: nicht vertrauenswürdiger Download-Server."));
+      return;
+    }
+    const request = https.get(url, { headers: { "User-Agent": "Clipfarm-Capture-Setup/1.0", Accept: "application/octet-stream, text/plain" } }, (response) => {
+      if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+        response.resume();
+        if (redirects >= 5) { reject(new Error("Der FFmpeg-Download enthält zu viele Weiterleitungen.")); return; }
+        const next = new URL(response.headers.location, url).href;
+        openFfmpegDownload(next, redirects + 1).then(resolve, reject);
+        return;
+      }
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`Der FFmpeg-Server antwortet mit HTTP ${response.statusCode || "?"}.`));
+        return;
+      }
+      resolve({ response, finalUrl: url.href });
+    });
+    request.setTimeout(60000, () => request.destroy(new Error("Zeitüberschreitung beim Verbinden mit dem FFmpeg-Server.")));
+    request.once("error", reject);
+  });
+}
+
+async function readFfmpegChecksum(address) {
+  const { response } = await openFfmpegDownload(address);
+  let body = "";
+  for await (const chunk of response) {
+    body += chunk.toString("utf8");
+    if (body.length > 4096) throw new Error("Die FFmpeg-Prüfsumme ist ungültig.");
+  }
+  const match = body.trim().match(/^([a-f0-9]{64})(?:\s|$)/i);
+  if (!match) throw new Error("Der FFmpeg-Server hat keine gültige SHA-256-Prüfsumme geliefert.");
+  return match[1].toLowerCase();
+}
+
+async function downloadFfmpegArchive(address, destination) {
+  const { response, finalUrl } = await openFfmpegDownload(address);
+  const declaredSize = Number(response.headers["content-length"] || 0);
+  const maximumSize = 300 * 1024 * 1024;
+  if (declaredSize > maximumSize) {
+    response.once("error", () => {});
+    response.destroy();
+    throw new Error("Das FFmpeg-Archiv ist unerwartet groß.");
+  }
+  let downloadedSize = 0;
+  try {
+    await pipeline(
+      response,
+      new Transform({ transform(chunk, _encoding, callback) {
+        downloadedSize += chunk.length;
+        if (downloadedSize > maximumSize) { callback(new Error("Das FFmpeg-Archiv überschreitet die erlaubte Größe.")); return; }
+        callback(null, chunk);
+      } }),
+      fs.createWriteStream(destination, { flags: "wx" })
+    );
+  } catch (error) {
+    await fs.promises.rm(destination, { force: true }).catch(() => {});
+    throw error;
+  }
+  return finalUrl;
+}
+
+async function installFfmpegRuntime() {
+  const runtimeParent = captureRuntimeDirectory;
+  const staging = path.join(runtimeParent, `.install-${process.pid}-${Date.now()}`);
+  const archive = path.join(staging, "ffmpeg.zip");
+  const unpacked = path.join(staging, "unpacked");
+  const target = path.join(runtimeParent, "ffmpeg");
+  const backup = path.join(runtimeParent, `.previous-${process.pid}-${Date.now()}`);
+  await fs.promises.mkdir(staging, { recursive: true });
+  logEvent("info", "downloading required FFmpeg capture runtime", { source: "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" });
+  try {
+    const archiveUrl = await downloadFfmpegArchive("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip", archive);
+    const expectedHash = await readFfmpegChecksum(`${archiveUrl}.sha256`);
+    const actualHash = await new Promise((resolve, reject) => {
+      const hash = crypto.createHash("sha256");
+      const input = fs.createReadStream(archive);
+      input.on("error", reject);
+      input.on("data", (chunk) => hash.update(chunk));
+      input.on("end", () => resolve(hash.digest("hex")));
+    });
+    if (actualHash !== expectedHash) throw new Error("Die SHA-256-Prüfung des FFmpeg-Downloads ist fehlgeschlagen. Die Datei wurde nicht installiert.");
+
+    await fs.promises.mkdir(unpacked, { recursive: true });
+    const extractScript = "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:CLIPFARM_FFMPEG_ARCHIVE -DestinationPath $env:CLIPFARM_FFMPEG_STAGE -Force";
+    await new Promise((resolve, reject) => {
+      const encodedScript = Buffer.from(extractScript, "utf16le").toString("base64");
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedScript], {
+        windowsHide: true,
+        timeout: 300000,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, CLIPFARM_FFMPEG_ARCHIVE: archive, CLIPFARM_FFMPEG_STAGE: unpacked }
+      }, (error, _stdout, stderr) => error
+        ? reject(new Error(String(stderr || error.message || "FFmpeg konnte nicht entpackt werden.").trim().slice(-1200)))
+        : resolve());
+    });
+
+    const stagedExecutable = findFile(unpacked, "ffmpeg.exe", 6);
+    const stagedProbe = stagedExecutable && path.join(path.dirname(stagedExecutable), "ffprobe.exe");
+    if (!stagedExecutable || !stagedProbe || !fs.existsSync(stagedProbe)) throw new Error("Im heruntergeladenen FFmpeg-Paket fehlen ffmpeg.exe oder ffprobe.exe.");
+    await inspectFfmpeg(stagedExecutable);
+    const packageDirectory = path.dirname(path.dirname(stagedExecutable));
+
+    let hadPrevious = false;
+    try { await fs.promises.rename(target, backup); hadPrevious = true; }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    try { await fs.promises.rename(packageDirectory, target); }
+    catch (error) {
+      if (hadPrevious) await fs.promises.rename(backup, target).catch(() => {});
+      throw error;
+    }
+    if (hadPrevious) await fs.promises.rm(backup, { recursive: true, force: true });
+    const installed = path.join(target, "bin", "ffmpeg.exe");
+    await inspectFfmpeg(installed);
+    logEvent("info", "FFmpeg capture runtime installed", { ffmpeg: installed, sha256: actualHash });
+    return installed;
+  } finally {
+    await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function ensureFfmpegRuntime() {
+  if (!ffmpegRuntimePromise) {
+    ffmpegRuntimePromise = (async () => {
+      const candidate = findFfmpeg();
+      try {
+        const details = await inspectFfmpeg(candidate);
+        process.env.CLIPFARM_FFMPEG = candidate;
+        logEvent("info", "FFmpeg capture requirements verified", { ffmpeg: candidate });
+        return details;
+      } catch (error) {
+        logEvent("warn", "installed FFmpeg is missing capture requirements", { ffmpeg: candidate, error: error.message });
+      }
+      try {
+        const installed = await installFfmpegRuntime();
+        const details = await inspectFfmpeg(installed);
+        process.env.CLIPFARM_FFMPEG = installed;
+        return details;
+      } catch (error) {
+        throw new Error(`FFmpeg fehlt oder ist nicht für Clipfarm geeignet. Clipfarm versucht die passende Version automatisch zu installieren, konnte das aber nicht abschließen. Prüfe die Internetverbindung und starte Clipfarm erneut. Details: ${error.message}`);
+      }
+    })().catch((error) => {
+      ffmpegRuntimePromise = null;
+      throw error;
+    });
+  }
+  return ffmpegRuntimePromise;
+}
+
+async function canUseVideoEncoder(ffmpeg, encoder) {
+  const cacheKey = `${ffmpeg}\n${encoder}`;
+  if (encoderProbeCache.has(cacheKey)) return encoderProbeCache.get(cacheKey);
+  const args = ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1", "-frames:v", "1"];
+  if (encoder === "libx264") args.push("-c:v", encoder, "-preset", "ultrafast", "-tune", "zerolatency");
+  else args.push("-vf", "format=nv12", "-c:v", encoder, "-usage", "lowlatency", "-quality", "balanced");
+  args.push("-f", "null", "-");
+  const probe = runCaptureTool(ffmpeg, args, 15000).then(() => true, () => false);
+  encoderProbeCache.set(cacheKey, probe);
+  const available = await probe;
+  encoderProbeCache.set(cacheKey, available);
+  return available;
+}
+
+async function selectVideoEncoder(ffmpeg, availableEncoders) {
+  const candidates = engineConfig.encoder === "hevc_amf"
+    ? ["hevc_amf", "h264_amf", "libx264"]
+    : ["h264_amf", "libx264"];
+  for (const encoder of candidates) {
+    if (encoder !== "libx264" && !new RegExp(`\\b${encoder}\\b`, "i").test(availableEncoders)) continue;
+    if (await canUseVideoEncoder(ffmpeg, encoder)) {
+      if (encoder !== engineConfig.encoder) {
+        logEvent("warn", "configured video encoder unavailable; using compatible fallback", { configured: engineConfig.encoder, selected: encoder });
+      }
+      return encoder;
+    }
+  }
+  throw new Error("Weder AMD AMF noch der CPU-Encoder libx264 konnten gestartet werden. Aktualisiere den Grafiktreiber und starte Clipfarm erneut.");
 }
 
 function ringSegmentCount() {
@@ -635,6 +861,9 @@ async function startCapture() {
 async function startCaptureInternal() {
   if (captureProcess && captureState.state === "running") return Promise.resolve(getCaptureState());
   if (clipSaveInFlight) await clipSaveInFlight.catch(() => {});
+  const { ffmpeg, encoders } = await ensureFfmpegRuntime();
+  process.env.CLIPFARM_FFMPEG = ffmpeg;
+  const videoEncoder = await selectVideoEncoder(ffmpeg, encoders);
   const session = await detectGame();
   const [width, height] = engineConfig.resolution.split("x").map(Number);
   const quality = { performance: "speed", balanced: "balanced", quality: "quality" }[engineConfig.quality];
@@ -701,7 +930,6 @@ async function startCaptureInternal() {
   fs.mkdirSync(bufferDirectory, { recursive: true });
   fs.mkdirSync(clipDirectory, { recursive: true });
   clearBufferSegments();
-  const ffmpeg = findFfmpeg();
   const args = [
     "-hide_banner", "-loglevel", "warning", "-filter_complex_threads", "1",
     "-thread_queue_size", "4", "-f", "lavfi", "-i", captureTarget
@@ -729,10 +957,22 @@ async function startCaptureInternal() {
   }
   if (audioInputCount > 0) args.push("-c:a", "aac", "-b:a", includeSystemAudio && includeMicrophone && engineConfig.separateTracks ? "128k" : "160k", "-ar", "48000", "-ac", "2");
   if (includeSystemAudio && includeMicrophone && engineConfig.separateTracks) args.push("-metadata:s:a:0", "title=PC-Ton", "-metadata:s:a:1", "title=Mikrofon");
+  args.push("-r", String(engineConfig.fps), "-fps_mode", "cfr");
+  if (videoEncoder === "libx264") {
+    const x264Preset = engineConfig.quality === "quality" ? "superfast" : "ultrafast";
+    args.push(
+      "-vf", "hwdownload,format=bgra,format=yuv420p",
+      "-c:v", videoEncoder, "-preset", x264Preset, "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+      "-b:v", engineConfig.bitrate, "-maxrate", engineConfig.bitrate, "-bufsize", `${Number.parseInt(engineConfig.bitrate, 10) * 2}M`,
+      "-g", String(Math.max(1, Math.round(engineConfig.fps * SEGMENT_DURATION_SECONDS)))
+    );
+  } else {
+    args.push(
+      "-c:v", videoEncoder, "-usage", "lowlatency", "-quality", quality,
+      "-b:v", engineConfig.bitrate, "-g", String(Math.max(1, Math.round(engineConfig.fps * SEGMENT_DURATION_SECONDS))), "-pix_fmt", "d3d11"
+    );
+  }
   args.push(
-    "-r", String(engineConfig.fps), "-fps_mode", "cfr",
-    "-c:v", engineConfig.encoder, "-usage", "lowlatency", "-quality", quality,
-    "-b:v", engineConfig.bitrate, "-g", String(Math.max(1, Math.round(engineConfig.fps * SEGMENT_DURATION_SECONDS))), "-pix_fmt", "d3d11",
     "-max_muxing_queue_size", "32",
     "-f", "segment", "-segment_time", String(SEGMENT_DURATION_SECONDS), "-segment_wrap", String(segmentCount),
     "-segment_list", path.join(bufferDirectory, "segments.ffconcat"), "-segment_list_type", "ffconcat",
@@ -740,13 +980,13 @@ async function startCaptureInternal() {
     "-reset_timestamps", "1", path.join(bufferDirectory, "segment-%03d.mp4")
   );
   captureState = {
-    state: "starting", pid: null, encoder: engineConfig.encoder, captureMethod: actualCaptureMethod, captureTarget,
+    state: "starting", pid: null, encoder: videoEncoder, captureMethod: actualCaptureMethod, captureTarget,
     audioSource: [includeSystemAudio ? "Windows-Systemaudio" : null, includeMicrophone ? selectedMicrophone.name : null].filter(Boolean).join(" + ") || "none",
     error: null, bufferDirectory, micEnabled: captureState.micEnabled !== false, audioControlPort,
     microphoneLiveControl: includeMicrophone, config: engineConfig
   };
   logEvent("info", "capture engine starting", {
-    encoder: engineConfig.encoder, resolution: engineConfig.resolution, fps: engineConfig.fps, bitrate: engineConfig.bitrate,
+    encoder: videoEncoder, configuredEncoder: engineConfig.encoder, resolution: engineConfig.resolution, fps: engineConfig.fps, bitrate: engineConfig.bitrate,
     quality: engineConfig.quality, requestedCaptureMethod: engineConfig.captureMethod, captureMethod: actualCaptureMethod,
     captureTarget, systemAudio: includeSystemAudio, microphone: selectedMicrophone?.name || null,
     captureWindowTitle: session.windowTitle || null, captureWindowHandle, processId: session.processId || null,
