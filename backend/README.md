@@ -1,6 +1,6 @@
 # Clipfarm community backend
 
-This Node.js service backs the Electron account, upload, and community-feed flows.
+This Node.js service backs the Electron account, profile, upload, and community-feed flows.
 It uses Node's built-in SQLite driver and crypto APIs; it has no runtime npm
 dependencies. The production service listens only on 127.0.0.1:4188 and is
 published through the existing HTTPS Nginx virtual host at
@@ -14,11 +14,17 @@ take a username and password over HTTPS. Passwords are stored as per-user salted
 scrypt hashes. Short-lived access tokens and rotating refresh tokens are kept
 in Electron's OS-backed safeStorage; the renderer never receives either token.
 
+Authenticated profile routes read and update display names, bios, avatars, and
+clip-sharing privacy settings. Existing deployments that do not yet expose
+`/profile` remain compatible with clip uploads; profile editing requires this
+updated backend.
+
 Uploads stream to a temporary server file and become visible only after the
 server verifies the MP4 header and commits the clip record. A repeated
 Idempotency-Key returns the already committed clip. The desktop client retains
-its staged file until that response includes the committed clip ID. Media is
-public by random clip ID to support feed playback and HTTP byte ranges. No likes,
+its staged file until that response includes the committed clip ID. Media uses
+signed playback URLs and HTTP byte ranges; feed visibility follows profile
+sharing settings. No likes,
 comments, view counts, or thumbnail URLs are claimed by this first API version.
 The feed uses a designed frame placeholder until a real thumbnail service exists.
 

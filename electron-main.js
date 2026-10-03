@@ -576,7 +576,15 @@ async function saveReplay() {
     if (!community) throw new Error("Clipfarm wird noch gestartet.");
     const account = await community.getAccount();
     if (!account.user) throw new Error("Melde dich in Clipfarm an, bevor du einen Clip sicherst.");
-    const profile = await community.getProfile();
+    let profile;
+    try {
+      profile = await community.getProfile();
+    } catch (error) {
+      // Older deployed APIs do not expose /profile yet. Preserve their legacy
+      // behavior (uploaded clips are shared) instead of blocking local capture.
+      if (error.status !== 404) throw error;
+      profile = { localOnly: false };
+    }
     const [settings, session] = await Promise.all([api("/api/config"), api("/api/session")]);
     const uploadId = profile.localOnly ? null : crypto.randomUUID();
     const result = await api("/api/clip/save", {

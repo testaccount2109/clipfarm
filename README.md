@@ -61,7 +61,7 @@ The social feed and local capture are separate: only server-provided clips belon
 
 The product API uses the HTTPS origin centralized in `backend-config.js` and checks `GET /api/v1/health`. The existing website root `https://benni-projects.de/` may continue to request HTTP-Basic-Auth; Clipfarm does not send account credentials to that page. Nginx publishes only `/api/v1/` to the separate API service and disables Basic Auth on that route. HTTP redirects to HTTPS, and the existing certificate covers `benni-projects.de` and `www.benni-projects.de`.
 
-`backend/server.js` provides account registration and sign-in, encrypted-at-rest password hashes, rotating refresh sessions, a newest-first community feed, MP4 uploads, and byte-range video playback. The feed contains only server records. Likes, comments, view counts, and thumbnails are not claimed by this version. MP4 media links use random IDs and are public for playback.
+`backend/server.js` provides account registration and sign-in, encrypted-at-rest password hashes, rotating refresh sessions, user profiles and clip-sharing settings, a newest-first community feed, MP4 uploads, and byte-range video playback. The feed contains only server records. Likes, comments, view counts, and generated thumbnails are not claimed by this version. Media is served through signed playback URLs, and feed visibility follows each profile's sharing setting.
 
 The Electron main process sends credentials and session tokens over HTTPS. Passwords are held only for the sign-in request. Session tokens are encrypted with Windows `safeStorage`; the renderer receives neither passwords nor tokens. A pending upload is copied into the per-user temporary queue, retried with the same idempotency key, and retained across restarts. Clipfarm removes that temporary copy and the new capture file only after the server confirms a committed clip ID. Existing local clips and settings are left intact.
 
@@ -70,6 +70,7 @@ The Electron main process sends credentials and session tokens over HTTPS. Passw
 The service contract is `backend/openapi.json`, served at `GET /api/v1/openapi.json`. Available operations are:
 
 - `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `GET /api/v1/auth/session`, `POST /api/v1/auth/refresh`, and `POST /api/v1/auth/logout`.
+- `GET` and `POST /api/v1/profile` for profile and privacy settings, plus `POST /api/v1/profile/password` and `GET` or `HEAD /api/v1/users/{id}/avatar`.
 - `GET /api/v1/clips?sort=uploadedAt&order=desc&cursor=…` for real community clips.
 - `POST /api/v1/clips` for an authenticated MP4 upload, with a required `Idempotency-Key`.
 - `GET` or `HEAD /api/v1/clips/{id}/media` for byte-range playback.

@@ -468,7 +468,7 @@ rateLimitSweep.unref();
 async function route(request, response, url) {
   const pathname = url.pathname;
   if (pathname === API_PREFIX + "/health" && request.method === "GET") {
-    json(response, 200, { ok: true, service: "clipfarm-community-api", version: "1.0.0" });
+    json(response, 200, { ok: true, service: "clipfarm-community-api", version: "1.1.0" });
     return;
   }
   if (pathname === API_PREFIX + "/openapi.json" && request.method === "GET") {
